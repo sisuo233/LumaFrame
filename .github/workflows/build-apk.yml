@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android Release APK
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Build debug APK
+    name: Build release APK
     runs-on: ubuntu-22.04
     timeout-minutes: 90
 
@@ -54,14 +54,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --upgrade buildozer cython virtualenv python-for-android==2026.5.9
 
-      - name: Build APK
+      - name: Build release APK
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           bash scripts/build_apk.sh
 
-      - name: Upload APK artifact
+      - name: Upload release APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: film-border-debug-apk
+          name: film-border-release-apk
           path: bin/*.apk
           if-no-files-found: error

@@ -32,8 +32,8 @@ else
 fi
 
 cd "${BUILD_DIR}"
-echo "Building debug APK..."
-buildozer -v android debug
+echo "Building release APK..."
+buildozer -v android release
 
 mkdir -p "${OUTPUT_DIR}"
 cp -f bin/*.apk "${OUTPUT_DIR}/"
@@ -41,4 +41,3 @@ cp -f bin/*.apk "${OUTPUT_DIR}/"
 echo
 echo "APK copied to:"
 ls -1 "${OUTPUT_DIR}"/*.apk
-
