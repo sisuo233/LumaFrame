@@ -28,18 +28,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Cache Buildozer downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.buildozer
-            ~/.gradle
-            ~/.cache/pip
-            ~/film-border-build/.buildozer
-          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
-          restore-keys: |
-            buildozer-${{ runner.os }}-
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
