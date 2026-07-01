@@ -439,6 +439,13 @@ class CompactDropDown(DropDown):
         self.bar_width = dp(4)
         self.scroll_type = ["bars", "content"]
 
+    def open(self, *args, **kwargs):
+        self.opacity = 0
+        result = super().open(*args, **kwargs)
+        Animation.cancel_all(self)
+        Animation(opacity=1, d=0.16, t="out_quad").start(self)
+        return result
+
 
 class SoftSpinner(Spinner):
     normal_color = ListProperty([0.945, 0.947, 0.952, 1])
@@ -656,6 +663,32 @@ class FilmBorderApp(App):
         )
         return content
 
+    def _open_popup_with_animation(self, popup: Popup, content=None):
+        target = content or popup.content
+        target.opacity = 0
+        popup.open()
+
+        def run_animation(*_args):
+            Animation.cancel_all(target)
+            end_y = target.y
+            target.y = end_y - dp(18)
+            Animation(opacity=1, y=end_y, d=0.22, t="out_cubic").start(target)
+
+        Clock.schedule_once(run_animation, 0)
+
+    def _dismiss_popup_with_animation(self, popup: Popup, on_complete=None):
+        target = popup.content
+        Animation.cancel_all(target)
+        end_y = target.y - dp(12)
+        animation = Animation(opacity=0, y=end_y, d=0.14, t="in_quad")
+        animation.bind(
+            on_complete=lambda *_args: (
+                popup.dismiss(),
+                on_complete() if on_complete else None,
+            )
+        )
+        animation.start(target)
+
     def _select_film(self, name: str):
         self.selected_film = name
         self.film_button.text = name
@@ -666,11 +699,13 @@ class FilmBorderApp(App):
 
     def _select_film_from_popup(self, name: str, popup: Popup):
         self._select_film(name)
-        popup.dismiss()
+        self._dismiss_popup_with_animation(popup)
 
     def _back_to_film_categories(self, popup: Popup):
-        popup.dismiss()
-        Clock.schedule_once(lambda *_clock_args: self.open_film_picker(), 0)
+        self._dismiss_popup_with_animation(
+            popup,
+            on_complete=lambda: Clock.schedule_once(lambda *_clock_args: self.open_film_picker(), 0),
+        )
 
     def open_film_picker(self, *_args):
         content = self._white_popup_content(padding=[dp(20), dp(18), dp(20), dp(16)], spacing=dp(12))
@@ -726,11 +761,16 @@ class FilmBorderApp(App):
 
         def choose_film(name: str):
             self._select_film(name)
-            popup.dismiss()
+            self._dismiss_popup_with_animation(popup)
 
         def open_group(group_name: str, films: list[str]):
-            popup.dismiss()
-            Clock.schedule_once(lambda *_clock_args: self.open_film_group_picker(group_name, films), 0)
+            self._dismiss_popup_with_animation(
+                popup,
+                on_complete=lambda: Clock.schedule_once(
+                    lambda *_clock_args: self.open_film_group_picker(group_name, films),
+                    0,
+                ),
+            )
 
         def add_option(name: str, on_release):
             selected = name == self.selected_film
@@ -787,7 +827,7 @@ class FilmBorderApp(App):
 
         search_input.bind(text=render_search)
         render_categories()
-        popup.open()
+        self._open_popup_with_animation(popup, content)
         Clock.schedule_once(lambda *_clock_args: setattr(search_input, "focus", True), 0.1)
 
     def open_film_group_picker(self, group_name: str, films: list[str]):
@@ -841,7 +881,7 @@ class FilmBorderApp(App):
         back_button.bind(on_release=lambda *_button_args: self._back_to_film_categories(popup))
         footer.add_widget(back_button)
         content.add_widget(footer)
-        popup.open()
+        self._open_popup_with_animation(popup, content)
 
     def open_border_settings(self, *_args):
         content = BoxLayout(
@@ -932,8 +972,8 @@ class FilmBorderApp(App):
             side_slider.value = DEFAULT_SIDE_BORDER_RATIO
 
         reset_button.bind(on_release=reset_values)
-        done_button.bind(on_release=popup.dismiss)
-        popup.open()
+        done_button.bind(on_release=lambda *_button_args: self._dismiss_popup_with_animation(popup))
+        self._open_popup_with_animation(popup, content)
 
     def choose_photo(self, *_args):
         if self.busy:
@@ -1013,9 +1053,9 @@ class FilmBorderApp(App):
             size_hint=(0.94, 0.90),
             auto_dismiss=True,
         )
-        cancel.bind(on_release=popup.dismiss)
+        cancel.bind(on_release=lambda *_args: self._dismiss_popup_with_animation(popup))
         pick.bind(on_release=lambda *_args: self._select_from_popup(chooser, popup))
-        popup.open()
+        self._open_popup_with_animation(popup, content)
 
     def _open_android_gallery(self):
         try:
@@ -1079,8 +1119,8 @@ class FilmBorderApp(App):
 
     def _select_from_popup(self, chooser: FileChooserIconView, popup: Popup):
         if chooser.selection:
-            popup.dismiss()
-            self._on_file_selection(chooser.selection)
+            selection = list(chooser.selection)
+            self._dismiss_popup_with_animation(popup, on_complete=lambda: self._on_file_selection(selection))
         else:
             self.set_status("还没有选中照片。")
 
@@ -1122,11 +1162,10 @@ class FilmBorderApp(App):
         return path
 
     def _copy_android_uri_to_cache(self, uri_text: str) -> Path:
-        from jnius import autoclass, jarray
+        from jnius import autoclass
 
         Uri = autoclass("android.net.Uri")
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        FileOutputStream = autoclass("java.io.FileOutputStream")
 
         uri = Uri.parse(uri_text)
         resolver = PythonActivity.mActivity.getContentResolver()
@@ -1156,21 +1195,39 @@ class FilmBorderApp(App):
         }.get(mime_type, ".jpg")
         output_path = imports_dir / f"album_{stamp}{ext}"
 
-        output_stream = FileOutputStream(str(output_path))
-        buffer = jarray("b")([0] * 8192)
-        try:
-            while True:
-                count = input_stream.read(buffer)
-                if count < 0:
-                    break
-                if count:
-                    output_stream.write(buffer, 0, count)
-        finally:
-            output_stream.close()
-            input_stream.close()
+        self._copy_android_stream_to_path(input_stream, output_path)
 
         self._validate_image_path(output_path)
         return output_path
+
+    def _copy_android_stream_to_path(self, input_stream, output_path: Path):
+        from jnius import autoclass
+
+        Channels = autoclass("java.nio.channels.Channels")
+        FileOutputStream = autoclass("java.io.FileOutputStream")
+
+        input_channel = None
+        output_stream = None
+        output_channel = None
+        try:
+            input_channel = Channels.newChannel(input_stream)
+            output_stream = FileOutputStream(str(output_path))
+            output_channel = output_stream.getChannel()
+            position = 0
+            while True:
+                copied = output_channel.transferFrom(input_channel, position, 1024 * 1024)
+                if copied <= 0:
+                    break
+                position += copied
+            output_stream.flush()
+        finally:
+            if output_channel is not None:
+                output_channel.close()
+            if output_stream is not None:
+                output_stream.close()
+            if input_channel is not None:
+                input_channel.close()
+            input_stream.close()
 
     def _decode_android_uri_to_jpeg(self, resolver, uri, output_path: Path) -> Path | None:
         from jnius import autoclass
