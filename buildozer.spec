@@ -14,6 +14,7 @@ fullscreen = 0
 android.permissions = READ_MEDIA_IMAGES,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE
 android.minapi = 23
 android.archs = arm64-v8a, armeabi-v7a
+android.accept_sdk_license = True
 
 [buildozer]
 log_level = 2
