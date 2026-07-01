@@ -496,6 +496,7 @@ class FilmBorderApp(App):
         self.preview_event = None
         self.pending_preview = False
         self.selected_film = DEFAULT_FILM_NAME
+        self.show_film_cover = True
         self.side_border_ratio = DEFAULT_SIDE_BORDER_RATIO
         self.top_border_ratio = DEFAULT_TOP_BORDER_RATIO
         self.busy = False
@@ -919,6 +920,16 @@ class FilmBorderApp(App):
             height=dp(44),
         )
 
+        cover_button = CapsuleButton(
+            text="显示胶卷图片" if self.show_film_cover else "隐藏胶卷图片",
+            font_name=self.font_name,
+            size_hint_y=None,
+            height=dp(48),
+            normal_color=[0.93, 0.935, 0.945, 1],
+            down_color=[0.88, 0.885, 0.90, 1],
+            color=[0.04, 0.04, 0.05, 1],
+        )
+
         def update_label(label: Label, prefix: str, value: float):
             label.text = f"{prefix} {value * 100:.1f}%"
 
@@ -937,10 +948,18 @@ class FilmBorderApp(App):
         top_slider.bind(value=on_top_change)
         side_slider.bind(value=on_side_change)
 
+        def toggle_cover(*_button_args):
+            self.show_film_cover = not self.show_film_cover
+            cover_button.text = "显示胶卷图片" if self.show_film_cover else "隐藏胶卷图片"
+            self._schedule_preview()
+
+        cover_button.bind(on_release=toggle_cover)
+
         content.add_widget(top_label)
         content.add_widget(top_slider)
         content.add_widget(side_label)
         content.add_widget(side_slider)
+        content.add_widget(cover_button)
 
         button_row = GridLayout(cols=2, spacing=dp(10), size_hint_y=None, height=dp(52))
         reset_button = CapsuleButton(
@@ -963,7 +982,7 @@ class FilmBorderApp(App):
             background_color=[1, 1, 1, 0],
             content=content,
             size_hint=(0.88, None),
-            height=dp(320),
+            height=dp(382),
             auto_dismiss=True,
         )
 
@@ -1321,6 +1340,7 @@ class FilmBorderApp(App):
         film_option = self._current_film_option()
         style_key = self._current_style_key()
         text_align = self._current_text_align()
+        show_film_cover = self.show_film_cover
         side_border_ratio = self.side_border_ratio
         top_border_ratio = self.top_border_ratio
         thread = threading.Thread(
@@ -1331,6 +1351,7 @@ class FilmBorderApp(App):
                 film_option,
                 style_key,
                 text_align,
+                show_film_cover,
                 side_border_ratio,
                 top_border_ratio,
             ),
@@ -1345,6 +1366,7 @@ class FilmBorderApp(App):
         film_option: FilmOption,
         style_key: str,
         text_align: str,
+        show_film_cover: bool,
         side_border_ratio: float,
         top_border_ratio: float,
     ):
@@ -1355,7 +1377,7 @@ class FilmBorderApp(App):
                 output_path=output,
                 film_name=film_option.name,
                 film_type=film_option.film_type,
-                film_cover_path=film_option.cover_path,
+                film_cover_path=film_option.cover_path if show_film_cover else None,
                 style_key=style_key,
                 text_align=text_align,
                 side_border_ratio=side_border_ratio,
