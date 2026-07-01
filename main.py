@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from kivy.animation import Animation
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.text import LabelBase
@@ -505,6 +506,8 @@ class FilmBorderApp(App):
         root.add_widget(self._build_header())
         root.add_widget(self._build_preview())
         root.add_widget(self._build_controls())
+        root.opacity = 0
+        Clock.schedule_once(lambda *_args: Animation(opacity=1, d=0.28, t="out_quad").start(root), 0)
         return root
 
     def _build_header(self) -> BoxLayout:
@@ -535,6 +538,7 @@ class FilmBorderApp(App):
             nocache=True,
             size_hint=(1, 1),
             pos_hint={"x": 0, "y": 0},
+            opacity=0,
         )
         self.placeholder = self._label(
             "打开相册后会在这里预览",
@@ -1094,6 +1098,7 @@ class FilmBorderApp(App):
         self.placeholder.opacity = 1
         self.placeholder.text = "正在生成预览。"
         self.preview_image.source = ""
+        self.preview_image.opacity = 0
         self.preview_image.reload()
         self.set_status("已选择照片，正在生成预览。")
         self.preview_current()
@@ -1251,6 +1256,9 @@ class FilmBorderApp(App):
 
     def _start_render(self, save: bool):
         self.busy = True
+        if not save:
+            self.placeholder.text = "正在生成预览。"
+            self._start_preview_loading()
         self.set_status("正在保存成片。" if save else "正在生成预览。")
         input_path = self.input_path
         film_option = self._current_film_option()
@@ -1345,11 +1353,16 @@ class FilmBorderApp(App):
             return
 
         self.preview_path = output
-        self.placeholder.opacity = 0
+        self._stop_preview_loading()
+        Animation.cancel_all(self.placeholder)
+        Animation(opacity=0, d=0.16, t="out_quad").start(self.placeholder)
         self.preview_image.source = ""
         self.preview_image.reload()
+        self.preview_image.opacity = 0
         self.preview_image.source = image_source(output)
         self.preview_image.reload()
+        Animation.cancel_all(self.preview_image)
+        Animation(opacity=1, d=0.26, t="out_quad").start(self.preview_image)
         self.set_status("预览已更新。")
         if self.pending_preview:
             self.pending_preview = False
@@ -1357,12 +1370,29 @@ class FilmBorderApp(App):
 
     def _render_failed(self, message: str):
         self.busy = False
-        self.placeholder.opacity = 1
+        self._stop_preview_loading()
         self.placeholder.text = "预览生成失败。"
+        Animation.cancel_all(self.placeholder)
+        self.placeholder.opacity = 0
+        Animation(opacity=1, d=0.18, t="out_quad").start(self.placeholder)
         self.set_status(f"处理失败：{self._friendly_error(message)}")
         if self.pending_preview:
             self.pending_preview = False
             self._schedule_preview()
+
+    def _start_preview_loading(self):
+        self.placeholder.opacity = max(self.placeholder.opacity, 0.45)
+        Animation.cancel_all(self.placeholder)
+        pulse = Animation(opacity=0.45, d=0.55, t="in_out_sine") + Animation(
+            opacity=1,
+            d=0.55,
+            t="in_out_sine",
+        )
+        pulse.repeat = True
+        pulse.start(self.placeholder)
+
+    def _stop_preview_loading(self):
+        Animation.cancel_all(self.placeholder)
 
     def set_status(self, text: str):
         text = " ".join(str(text).split())
