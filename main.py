@@ -136,6 +136,7 @@ DEFAULT_SIDE_BORDER_RATIO = 0.055
 DEFAULT_TOP_BORDER_RATIO = 0.055
 MIN_BORDER_RATIO = 0.015
 MAX_BORDER_RATIO = 0.16
+MAX_SEARCH_RESULTS = 80
 
 
 @dataclass(frozen=True)
@@ -492,6 +493,7 @@ class FilmBorderApp(App):
         self.title = "Film Border"
         self.font_name = register_font()
         self.input_path: Path | None = None
+        self.preview_input_path: Path | None = None
         self.preview_path: Path | None = None
         self.preview_event = None
         self.pending_preview = False
@@ -500,6 +502,7 @@ class FilmBorderApp(App):
         self.side_border_ratio = DEFAULT_SIDE_BORDER_RATIO
         self.top_border_ratio = DEFAULT_TOP_BORDER_RATIO
         self.busy = False
+        self.import_busy = False
 
         if platform not in ("android", "ios"):
             Window.size = (430, 760)
@@ -808,8 +811,9 @@ class FilmBorderApp(App):
 
             list_content.clear_widgets()
             results = [film for film in FILM_OPTIONS if query in film.search_text]
+            shown_results = results[:MAX_SEARCH_RESULTS]
             label = self._label(
-                f"搜索结果 {len(results)}",
+                f"搜索结果 {len(results)}" if len(results) <= MAX_SEARCH_RESULTS else f"搜索结果 {len(results)}，显示前 {MAX_SEARCH_RESULTS}",
                 font_size=dp(14),
                 color=[0.36, 0.36, 0.38, 1],
                 bold=True,
@@ -823,10 +827,18 @@ class FilmBorderApp(App):
                 list_content.add_widget(empty)
                 return
 
-            for film in results:
+            for film in shown_results:
                 add_option(film.label, lambda _button, name=film.label: choose_film(name))
 
-        search_input.bind(text=render_search)
+        search_event = {"event": None}
+
+        def schedule_search(_instance=None, value: str = ""):
+            search_display.text = value
+            if search_event["event"] is not None:
+                search_event["event"].cancel()
+            search_event["event"] = Clock.schedule_once(lambda *_clock_args: render_search(value=value), 0.18)
+
+        search_input.bind(text=schedule_search)
         render_categories()
         self._open_popup_with_animation(popup, content)
         Clock.schedule_once(lambda *_clock_args: setattr(search_input, "focus", True), 0.1)
@@ -995,7 +1007,7 @@ class FilmBorderApp(App):
         self._open_popup_with_animation(popup, content)
 
     def choose_photo(self, *_args):
-        if self.busy:
+        if self.busy or self.import_busy:
             return
         if platform == "android":
             self._open_android_gallery()
@@ -1005,12 +1017,12 @@ class FilmBorderApp(App):
     def _schedule_preview(self, *_args):
         if not self.input_path:
             return
-        if self.busy:
+        if self.busy or self.import_busy:
             self.pending_preview = True
             return
         if self.preview_event is not None:
             self.preview_event.cancel()
-        self.preview_event = Clock.schedule_once(self._run_scheduled_preview, 0.35)
+        self.preview_event = Clock.schedule_once(self._run_scheduled_preview, 0.45)
 
     def _run_scheduled_preview(self, *_args):
         self.preview_event = None
@@ -1104,7 +1116,9 @@ class FilmBorderApp(App):
 
             PythonActivity.mActivity.startActivityForResult(intent, ANDROID_PICK_IMAGE_REQUEST)
         except Exception as exc:
-            self.set_status(f"无法打开系统相册：{exc}")
+            message = str(exc)
+            Clock.schedule_once(lambda *_args: self.set_status(f"无法打开系统相册：{message}"), 0)
+            return
 
     def _on_android_activity_result(self, request_code, result_code, intent):
         if request_code != ANDROID_PICK_IMAGE_REQUEST:
@@ -1121,7 +1135,7 @@ class FilmBorderApp(App):
 
             Activity = autoclass("android.app.Activity")
             if result_code != Activity.RESULT_OK or intent is None:
-                self.set_status("没有选择照片。")
+                Clock.schedule_once(lambda *_args: self.set_status("没有选择照片。"), 0)
                 return
 
             uri = intent.getData()
@@ -1130,11 +1144,14 @@ class FilmBorderApp(App):
                 if clip_data is not None and clip_data.getItemCount() > 0:
                     uri = clip_data.getItemAt(0).getUri()
             if uri is None:
-                self.set_status("没有拿到相册图片。")
+                Clock.schedule_once(lambda *_args: self.set_status("没有拿到相册图片。"), 0)
                 return
-            self._on_file_selection([uri.toString()])
+            uri_text = uri.toString()
+            Clock.schedule_once(lambda *_args: self._on_file_selection([uri_text]), 0)
         except Exception as exc:
-            self.set_status(f"读取相册图片失败：{exc}")
+            message = str(exc)
+            Clock.schedule_once(lambda *_args: self.set_status(f"读取相册图片失败：{message}"), 0)
+            return
 
     def _select_from_popup(self, chooser: FileChooserIconView, popup: Popup):
         if chooser.selection:
@@ -1144,23 +1161,97 @@ class FilmBorderApp(App):
             self.set_status("还没有选中照片。")
 
     def _on_file_selection(self, selection):
+        self._begin_file_import(selection)
+
+    def _begin_file_import(self, selection):
         if not selection:
             self.set_status("没有选择照片。")
             return
-
-        try:
-            self.input_path = self._selection_to_path(str(selection[0]))
-        except Exception as exc:
-            self.set_status(f"照片读取失败：{exc}")
+        if self.import_busy:
             return
 
+        selected = str(selection[0])
+        self.import_busy = True
+        self.input_path = None
+        self.preview_input_path = None
         self.placeholder.opacity = 1
-        self.placeholder.text = "正在生成预览。"
+        self.placeholder.text = "正在读取照片。"
         self.preview_image.source = ""
         self.preview_image.opacity = 0
         self.preview_image.reload()
+        self.set_status("正在读取照片。")
+
+        thread = threading.Thread(
+            target=self._import_selection_worker,
+            args=(selected,),
+            daemon=True,
+        )
+        thread.start()
+
+    def _import_selection_worker(self, selected: str):
+        try:
+            path = self._selection_to_path(selected)
+            preview_path = self._make_preview_input(path)
+        except Exception as exc:
+            message = str(exc)
+            Clock.schedule_once(lambda *_args: self._file_import_failed(message), 0)
+            return
+        Clock.schedule_once(lambda *_args: self._file_import_done(path, preview_path), 0)
+
+    def _file_import_done(self, path: Path, preview_path: Path):
+        self.import_busy = False
+        self.input_path = path
+        self.preview_input_path = preview_path
+        self.placeholder.opacity = 1
+        self.placeholder.text = "正在生成预览。"
         self.set_status("已选择照片，正在生成预览。")
         self.preview_current()
+
+    def _file_import_failed(self, message: str):
+        self.import_busy = False
+        self.input_path = None
+        self.preview_input_path = None
+        self.placeholder.text = "打开相册后会在这里预览"
+        self.placeholder.opacity = 1
+        self.set_status(f"照片读取失败：{self._friendly_error(message)}")
+        if self.pending_preview:
+            self.pending_preview = False
+
+    def _make_preview_input(self, input_path: Path) -> Path:
+        from PIL import Image as PILImage
+        from PIL import ImageOps as PILImageOps
+
+        max_long_edge = 1600
+        directory = Path(self.user_data_dir) / "preview_sources"
+        directory.mkdir(parents=True, exist_ok=True)
+        output = directory / f"preview_source_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.jpg"
+
+        with PILImage.open(input_path) as image:
+            image = PILImageOps.exif_transpose(image)
+            if image.mode in ("RGBA", "LA"):
+                base = PILImage.new("RGB", image.size, (255, 255, 255))
+                alpha = image.getchannel("A") if "A" in image.getbands() else None
+                base.paste(image, mask=alpha)
+                image = base
+            else:
+                image = image.convert("RGB")
+
+            width, height = image.size
+            longest = max(width, height)
+            if longest <= max_long_edge:
+                return input_path
+
+            try:
+                resample = PILImage.Resampling.LANCZOS
+            except AttributeError:
+                resample = PILImage.LANCZOS
+
+            scale = max_long_edge / longest
+            size = (max(1, int(width * scale)), max(1, int(height * scale)))
+            image = image.resize(size, resample)
+            image.save(output, format="JPEG", quality=88, subsampling=1)
+
+        return output
 
     def _selection_to_path(self, selected: str) -> Path:
         if selected.startswith("content://"):
@@ -1191,6 +1282,28 @@ class FilmBorderApp(App):
         imports_dir = Path(self.user_data_dir) / "imports"
         imports_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+        mime_type = (resolver.getType(uri) or "").lower()
+        if mime_type not in ("image/heic", "image/heif"):
+            ext = {
+                "image/jpeg": ".jpg",
+                "image/png": ".png",
+                "image/webp": ".webp",
+                "image/bmp": ".bmp",
+            }.get(mime_type, ".jpg")
+            output_path = imports_dir / f"album_{stamp}{ext}"
+            input_stream = resolver.openInputStream(uri)
+            if input_stream is None:
+                raise ValueError("无法打开相册图片流。")
+            self._copy_android_stream_to_path(input_stream, output_path)
+            try:
+                self._validate_image_path(output_path)
+                return output_path
+            except Exception:
+                try:
+                    output_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
         decoded_path = self._decode_android_uri_to_jpeg(resolver, uri, imports_dir / f"album_{stamp}.jpg")
         if decoded_path is not None:
@@ -1312,7 +1425,7 @@ class FilmBorderApp(App):
         if self.preview_event is not None:
             self.preview_event.cancel()
             self.preview_event = None
-        if self.busy:
+        if self.busy or self.import_busy:
             self.pending_preview = True
             return
         if not self.input_path:
@@ -1322,7 +1435,7 @@ class FilmBorderApp(App):
         self._start_render(save=False)
 
     def save_current(self, *_args):
-        if self.busy:
+        if self.busy or self.import_busy:
             return
         if not self.input_path:
             self.set_status("请先打开相册选择一张照片。")
@@ -1336,7 +1449,7 @@ class FilmBorderApp(App):
             self.placeholder.text = "正在生成预览。"
             self._start_preview_loading()
         self.set_status("正在保存成片。" if save else "正在生成预览。")
-        input_path = self.input_path
+        input_path = self.input_path if save else (self.preview_input_path or self.input_path)
         film_option = self._current_film_option()
         style_key = self._current_style_key()
         text_align = self._current_text_align()

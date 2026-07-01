@@ -7,7 +7,7 @@ source.dir = .
 source.include_exts = py,png,jpg,jpeg,webp,bmp,json,kv,ttf,otf,ttc
 source.exclude_dirs = .git,.github,.venv,__pycache__,exports,bin,.codex-remote-attachments
 
-version = 0.1.3
+version = 0.1.4
 requirements = python3,kivy,pillow,pyjnius
 orientation = portrait
 fullscreen = 0
