@@ -20,6 +20,12 @@ class FrameStyle:
     background: tuple[int, int, int]
     text: tuple[int, int, int]
     caption_hint: tuple[int, int, int]
+    gradient: tuple[
+        tuple[int, int, int],
+        tuple[int, int, int],
+        tuple[int, int, int],
+        tuple[int, int, int],
+    ] | None = None
 
 
 STYLE_PRESETS: dict[str, FrameStyle] = {
@@ -43,15 +49,21 @@ STYLE_PRESETS: dict[str, FrameStyle] = {
     ),
     "polaroid_gold": FrameStyle(
         label="宝丽来金色边框",
-        background=(218, 181, 92),
-        text=(38, 31, 18),
-        caption_hint=(112, 89, 42),
+        background=(238, 188, 46),
+        text=(45, 28, 8),
+        caption_hint=(126, 76, 18),
     ),
     "fuji_limited": FrameStyle(
-        label="富士限定相纸",
-        background=(232, 246, 238),
-        text=(22, 72, 55),
-        caption_hint=(80, 140, 112),
+        label="富士马卡龙相纸",
+        background=(248, 229, 232),
+        text=(54, 66, 76),
+        caption_hint=(112, 128, 142),
+        gradient=(
+            (255, 205, 218),
+            (205, 229, 255),
+            (214, 244, 207),
+            (255, 231, 183),
+        ),
     ),
     "blur_background": FrameStyle(
         label="虚化背景",
@@ -163,6 +175,60 @@ def _open_cover_image(path: str | Path | None) -> Image.Image | None:
         return None
 
 
+def _trim_transparent(image: Image.Image) -> Image.Image:
+    if image.mode != "RGBA":
+        image = image.convert("RGBA")
+    bbox = image.getbbox()
+    return image.crop(bbox) if bbox else image
+
+
+def _tint_logo(image: Image.Image, fill: tuple[int, int, int]) -> Image.Image:
+    alpha = image.getchannel("A")
+    tinted = Image.new("RGBA", image.size, (*fill, 0))
+    tinted.putalpha(alpha)
+    return tinted
+
+
+def _remove_light_logo_background(image: Image.Image) -> Image.Image:
+    if image.mode != "RGBA":
+        image = image.convert("RGBA")
+    pixels = image.load()
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return image
+
+    sample_points = [
+        (0, 0),
+        (width - 1, 0),
+        (0, height - 1),
+        (width - 1, height - 1),
+    ]
+    light_corners = 0
+    for x, y in sample_points:
+        red, green, blue, alpha = pixels[x, y]
+        if alpha > 220 and red > 235 and green > 235 and blue > 235:
+            light_corners += 1
+    if light_corners < 3:
+        return image
+
+    cleaned = image.copy()
+    cleaned_pixels = cleaned.load()
+    for y in range(height):
+        for x in range(width):
+            red, green, blue, alpha = cleaned_pixels[x, y]
+            if alpha > 0 and red > 238 and green > 238 and blue > 238:
+                cleaned_pixels[x, y] = (red, green, blue, 0)
+    return _trim_transparent(cleaned)
+
+
+def _is_badge_like_logo(image: Image.Image) -> bool:
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return False
+    ratio = width / height
+    return 0.72 <= ratio <= 1.35
+
+
 def _resize_to_fit(image: Image.Image, max_width: int, max_height: int) -> Image.Image:
     width, height = image.size
     if width <= 0 or height <= 0:
@@ -192,6 +258,35 @@ def _make_blurred_background(image: Image.Image, width: int, height: int) -> Ima
     background = ImageEnhance.Brightness(background).enhance(0.58)
     background = ImageEnhance.Contrast(background).enhance(0.92)
     return background.convert("RGB")
+
+
+def _make_corner_gradient(
+    width: int,
+    height: int,
+    colors: tuple[
+        tuple[int, int, int],
+        tuple[int, int, int],
+        tuple[int, int, int],
+        tuple[int, int, int],
+    ],
+) -> Image.Image:
+    top_left, top_right, bottom_left, bottom_right = colors
+    if width <= 1 or height <= 1:
+        return Image.new("RGB", (width, height), top_left)
+
+    image = Image.new("RGB", (width, height))
+    pixels = image.load()
+    for y in range(height):
+        vertical = y / (height - 1)
+        for x in range(width):
+            horizontal = x / (width - 1)
+            channel_values = []
+            for channel in range(3):
+                top = top_left[channel] * (1 - horizontal) + top_right[channel] * horizontal
+                bottom = bottom_left[channel] * (1 - horizontal) + bottom_right[channel] * horizontal
+                channel_values.append(int(round(top * (1 - vertical) + bottom * vertical)))
+            pixels[x, y] = tuple(channel_values)
+    return image.filter(ImageFilter.GaussianBlur(radius=max(1, int(min(width, height) * 0.012))))
 
 
 def _paste_photo_with_depth(canvas: Image.Image, photo: Image.Image, x: int, y: int) -> Image.Image:
@@ -249,12 +344,116 @@ def _text_metrics(
     return left, top, right, bottom, right - left, bottom - top
 
 
+def _draw_camera_block(
+    canvas: Image.Image,
+    draw: ImageDraw.ImageDraw,
+    canvas_width: int,
+    content_x: int,
+    content_width: int,
+    content_y: int,
+    image_height: int,
+    top_border: int,
+    bottom_border: int,
+    side_border: int,
+    photo_width: int,
+    logo: str,
+    logo_image: Image.Image | None,
+    model: str,
+    text_align: str,
+    logo_fill: tuple[int, int, int],
+    model_fill: tuple[int, int, int],
+    font_path: str | None,
+) -> None:
+    logo = logo.strip()
+    model = model.strip()
+    if not logo and not model and logo_image is None:
+        return
+
+    max_width = max(120, int(content_width * 0.42))
+    gap = max(8, int(photo_width * 0.012)) if model else 0
+    logo_max_width = max(72, int(max_width * (0.48 if model else 1.0)))
+    model_max_width = max(72, max_width - logo_max_width - gap)
+    logo_bitmap = None
+    logo_font = None
+    model_font = None
+    logo_metrics = (0, 0, 0, 0, 0, 0)
+    model_metrics = (0, 0, 0, 0, 0, 0)
+
+    if logo_image is not None:
+        cleaned_logo = _remove_light_logo_background(_trim_transparent(logo_image))
+        if _is_badge_like_logo(cleaned_logo):
+            logo_width_limit = logo_max_width
+            logo_height_limit = max(24, int(bottom_border * 0.42))
+        else:
+            logo_width_limit = max(52, int(logo_max_width * 0.72))
+            logo_height_limit = max(20, int(bottom_border * 0.32))
+            model_max_width = max(72, max_width - logo_width_limit - gap)
+        logo_bitmap = _resize_to_fit(
+            cleaned_logo,
+            logo_width_limit,
+            logo_height_limit,
+        )
+        logo_metrics = (0, 0, logo_bitmap.width, logo_bitmap.height, logo_bitmap.width, logo_bitmap.height)
+    elif logo:
+        logo_font = _fit_font(
+            draw=draw,
+            text=logo,
+            max_width=logo_max_width,
+            preferred_size=max(22, int(photo_width * 0.034)),
+            min_size=max(14, int(photo_width * 0.018)),
+            font_path=font_path,
+        )
+        logo_metrics = _text_metrics(draw, logo, logo_font)
+    if model:
+        model_font = _fit_font(
+            draw=draw,
+            text=model,
+            max_width=model_max_width if logo_bitmap is not None or logo else max_width,
+            preferred_size=max(15, int(photo_width * 0.022)),
+            min_size=max(11, int(photo_width * 0.015)),
+            font_path=font_path,
+        )
+        model_metrics = _text_metrics(draw, model, model_font)
+
+    logo_left, logo_top, _logo_right, _logo_bottom, logo_width, logo_height = logo_metrics
+    model_left, model_top, _model_right, _model_bottom, model_width, model_height = model_metrics
+    has_logo = logo_bitmap is not None or bool(logo)
+    gap = gap if has_logo and model else 0
+    block_width = logo_width + gap + model_width
+    block_height = max(logo_height, model_height)
+    if block_width <= 0 or block_height <= 0:
+        return
+
+    if text_align == "right":
+        block_x = content_x + side_border
+    else:
+        block_x = content_x + content_width - side_border - block_width
+    block_y = content_y + image_height + top_border + (bottom_border - block_height) // 2
+
+    x = block_x
+    if logo_bitmap is not None:
+        logo_y = block_y + (block_height - logo_height) // 2
+        canvas.paste(logo_bitmap, (x, logo_y), logo_bitmap)
+        x += logo_width + gap
+    elif logo and logo_font:
+        logo_y = block_y + (block_height - logo_height) // 2
+        draw.text((x - logo_left, logo_y - logo_top), logo, fill=logo_fill, font=logo_font)
+        x += logo_width + gap
+    if model and model_font:
+        model_y = block_y + (block_height - model_height) // 2
+        draw.text((x - model_left, model_y - model_top), model, fill=model_fill, font=model_font)
+
+
 def render_film_frame(
     input_path: str | Path,
     output_path: str | Path,
     film_name: str,
     film_type: str | None = None,
     film_cover_path: str | Path | None = None,
+    camera_logo: str | None = None,
+    camera_logo_path: str | Path | None = None,
+    camera_model: str | None = None,
+    show_camera_info: bool = False,
     style_key: str = "classic_white",
     image_align: str = "center",
     text_align: str = "center",
@@ -274,6 +473,7 @@ def render_film_frame(
     image = _open_image(input_path, max_long_edge=max_long_edge)
     width, height = image.size
     cover_image = _open_cover_image(film_cover_path)
+    camera_logo_image = _open_cover_image(camera_logo_path) if show_camera_info else None
 
     side = max(12, int(width * side_border_ratio))
     top = max(12, int(width * top_border_ratio))
@@ -287,7 +487,11 @@ def render_film_frame(
     canvas = (
         _make_blurred_background(image, canvas_width, canvas_height)
         if blur_background
-        else Image.new("RGB", (canvas_width, canvas_height), style.background)
+        else (
+            _make_corner_gradient(canvas_width, canvas_height, style.gradient)
+            if style.gradient
+            else Image.new("RGB", (canvas_width, canvas_height), style.background)
+        )
     )
     min_side = max(8, int(side * 0.35))
     if image_align == "left":
@@ -303,10 +507,13 @@ def render_film_frame(
         canvas.paste(image, (image_x, image_y))
 
     caption = film_name.strip()
-    if caption or cover_image:
+    camera_logo_text = (camera_logo or "").strip() if show_camera_info else ""
+    camera_model_text = (camera_model or "").strip() if show_camera_info else ""
+    if caption or cover_image or camera_logo_text or camera_model_text:
         draw = ImageDraw.Draw(canvas)
         font_path = font_path or find_font_path()
         caption_fill = (255, 255, 255) if blur_background else style.text
+        hint_fill = (225, 225, 230) if blur_background else style.caption_hint
         if cover_image:
             cover_max_width = max(52, int(content_width * 0.18))
             cover_max_height = max(46, int(bottom * 0.64))
@@ -371,6 +578,27 @@ def render_film_frame(
             y = content_y + height + top + (bottom - text_height) // 2 - top_text
             draw.text((x - left, y), caption, fill=caption_fill, font=font)
 
+        _draw_camera_block(
+            canvas=canvas,
+            draw=draw,
+            canvas_width=canvas_width,
+            content_x=content_x,
+            content_width=content_width,
+            content_y=content_y,
+            image_height=height,
+            top_border=top,
+            bottom_border=bottom,
+            side_border=side,
+            photo_width=width,
+            logo=camera_logo_text,
+            logo_image=camera_logo_image,
+            model=camera_model_text,
+            text_align=text_align,
+            logo_fill=caption_fill,
+            model_fill=caption_fill,
+            font_path=font_path,
+        )
+
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(output, format="JPEG", quality=95, subsampling=0, optimize=True)
@@ -384,6 +612,10 @@ def main() -> None:
     parser.add_argument("--film", default="Kodak Portra 400", help="Film stock text")
     parser.add_argument("--film-type", default="", help="Film type text")
     parser.add_argument("--film-cover", default="", help="Film cover image path")
+    parser.add_argument("--camera-logo", default="", help="Camera brand logo text")
+    parser.add_argument("--camera-logo-path", default="", help="Camera brand logo image path")
+    parser.add_argument("--camera-model", default="", help="Camera model text")
+    parser.add_argument("--show-camera-info", action="store_true")
     parser.add_argument("--style", default="classic_white", choices=STYLE_PRESETS.keys())
     parser.add_argument("--image-align", default="center", choices=["left", "center", "right"])
     parser.add_argument("--text-align", default="center", choices=["left", "center", "right"])
@@ -404,6 +636,10 @@ def main() -> None:
         film_name=args.film,
         film_type=args.film_type,
         film_cover_path=args.film_cover,
+        camera_logo=args.camera_logo,
+        camera_logo_path=args.camera_logo_path,
+        camera_model=args.camera_model,
+        show_camera_info=args.show_camera_info,
         style_key=args.style,
         image_align=args.image_align,
         text_align=args.text_align,

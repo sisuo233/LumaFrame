@@ -14,7 +14,7 @@ from kivy.core.image import Image as CoreImage
 from kivy.clock import Clock
 from kivy.core.text import LabelBase
 from kivy.core.window import Window
-from kivy.graphics import Color, RoundedRectangle
+from kivy.graphics import Color, Line, RoundedRectangle
 from kivy.metrics import dp
 from kivy.properties import ListProperty, NumericProperty
 from kivy.uix.boxlayout import BoxLayout
@@ -40,14 +40,69 @@ ANDROID_PICK_IMAGE_REQUEST = 24017
 STYLE_BY_LABEL = {style.label: key for key, style in STYLE_PRESETS.items()}
 DEFAULT_STYLE_LABEL = STYLE_PRESETS["classic_white"].label
 TEXT_ALIGN_BY_LABEL = {
-    "文字居中": "center",
     "文字靠左": "left",
+    "文字居中": "center",
     "文字靠右": "right",
 }
-DEFAULT_TEXT_ALIGN_LABEL = "文字居中"
+DEFAULT_TEXT_ALIGN_LABEL = "文字靠左"
 BASE_DIR = Path(__file__).resolve().parent
 FILM_COVER_DIR = BASE_DIR / "assets" / "film_covers"
 FILM_INDEX_PATH = FILM_COVER_DIR / "index.json"
+CAMERA_LOGO_DIR = BASE_DIR / "assets" / "camera_logos"
+DEFAULT_CAMERA_BRAND_TEXT = ""
+CAMERA_BRAND_MENU_LABEL = "选择品牌"
+CAMERA_BRANDS = [
+    ("尼康", "nikon", "Nikon", ["nikon"]),
+    ("佳能", "canon", "Canon", ["canon"]),
+    ("索尼", "sony", "Sony", ["sony"]),
+    ("富士", "fujifilm", "FUJIFILM", ["fujifilm", "fuji"]),
+    ("徕卡", "leica", "Leica", ["leica"]),
+    ("哈苏", "hasselblad", "HASSELBLAD", ["hasselblad"]),
+    ("禄来", "rollei", "Rollei", ["rollei"]),
+    ("宾得", "pentax", "PENTAX", ["pentax"]),
+    ("理光", "ricoh", "RICOH", ["ricoh"]),
+    ("奥林巴斯", "olympus", "Olympus", ["olympus"]),
+    ("松下", "panasonic", "Panasonic", ["panasonic", "lumix"]),
+    ("适马", "sigma", "SIGMA", ["sigma"]),
+    ("柯尼卡", "konica", "Konica", ["konica"]),
+    ("美能达", "minolta", "Minolta", ["minolta"]),
+    ("康泰时", "contax", "CONTAX", ["contax"]),
+    ("蔡司", "zeiss", "ZEISS", ["zeiss", "carl zeiss"]),
+    ("雅西卡", "yashica", "Yashica", ["yashica"]),
+    ("玛米亚", "mamiya", "Mamiya", ["mamiya"]),
+    ("柯达", "kodak", "Kodak", ["kodak"]),
+    ("宝丽来", "polaroid", "Polaroid", ["polaroid"]),
+    ("福伦达", "voigtlander", "Voigtlander", ["voigtlander", "voigtländer"]),
+    ("爱克发", "agfa", "Agfa", ["agfa"]),
+    ("仙娜", "sinar", "Sinar", ["sinar"]),
+    ("飞思", "phase_one", "Phase One", ["phase one", "phaseone"]),
+    ("大疆", "dji", "DJI", ["dji"]),
+    ("GoPro", "gopro", "GoPro", ["gopro", "go pro"]),
+    ("RED", "red", "RED", ["red", "red digital cinema"]),
+    ("阿莱", "arri", "ARRI", ["arri"]),
+    ("黑魔法", "blackmagic", "Blackmagic Design", ["blackmagic", "blackmagic design"]),
+    ("Lomography", "lomography", "Lomography", ["lomography", "lomo"]),
+    ("柯西娜", "cosina", "Cosina", ["cosina"]),
+    ("三星", "samsung", "Samsung", ["samsung"]),
+    ("卡西欧", "casio", "CASIO", ["casio"]),
+    ("爱普生", "epson", "Epson", ["epson"]),
+    ("Praktica", "praktica", "Praktica", ["praktica"]),
+    ("Zenit", "zenit", "Zenit", ["zenit"]),
+    ("Linhof", "linhof", "Linhof", ["linhof"]),
+    ("ALPA", "alpa", "ALPA", ["alpa"]),
+    ("Bolex", "bolex", "Bolex", ["bolex"]),
+    ("Minox", "minox", "Minox", ["minox"]),
+    ("Chinon", "chinon", "Chinon", ["chinon"]),
+    ("Exakta", "exakta", "Exakta", ["exakta"]),
+    ("Topcon", "topcon", "Topcon", ["topcon"]),
+]
+CAMERA_BRAND_CHOICES = ["None"] + [display for _label, _key, display, _aliases in CAMERA_BRANDS]
+CAMERA_LOGO_ALIASES = {}
+for label, key, display, aliases in CAMERA_BRANDS:
+    CAMERA_LOGO_ALIASES[label.casefold()] = (key, display)
+    CAMERA_LOGO_ALIASES[display.casefold()] = (key, display)
+    for alias in aliases:
+        CAMERA_LOGO_ALIASES[alias.casefold()] = (key, display)
 FALLBACK_FILM_GROUPS = [
     (
         "Kodak",
@@ -360,12 +415,13 @@ class CapsuleButton(Button):
     radius = NumericProperty(dp(17))
 
     def __init__(self, **kwargs):
+        font_size = kwargs.pop("font_size", dp(15))
         super().__init__(**kwargs)
         self.background_normal = ""
         self.background_down = ""
         self.background_color = [0, 0, 0, 0]
         self.border = [0, 0, 0, 0]
-        self.font_size = dp(15)
+        self.font_size = font_size
         self.bold = True
         self.halign = "center"
         self.valign = "middle"
@@ -395,9 +451,11 @@ class CapsuleButton(Button):
 
 class SearchInput(TextInput):
     bg_color = ListProperty([1, 1, 1, 1])
+    border_color = ListProperty([0.78, 0.79, 0.82, 1])
     radius = NumericProperty(dp(16))
 
     def __init__(self, **kwargs):
+        font_size = kwargs.pop("font_size", dp(16))
         super().__init__(**kwargs)
         self.background_normal = ""
         self.background_active = ""
@@ -407,7 +465,7 @@ class SearchInput(TextInput):
         self.hint_text_color = [0.42, 0.42, 0.44, 1]
         self.cursor_color = [0.0, 0.48, 1.0, 1]
         self.selection_color = [0.0, 0.48, 1.0, 0.22]
-        self.font_size = dp(16)
+        self.font_size = font_size
         self.halign = "left"
         self.multiline = False
         self.write_tab = False
@@ -415,16 +473,38 @@ class SearchInput(TextInput):
         with self.canvas.before:
             self._color = Color(*self.bg_color)
             self._shape = RoundedRectangle(pos=self.pos, size=self.size, radius=[self.radius])
-        self.bind(pos=self._sync_shape, size=self._sync_shape, bg_color=self._sync_color, radius=self._sync_shape)
+        with self.canvas.after:
+            self._border_color = Color(*self.border_color)
+            self._border = Line(
+                rounded_rectangle=(self.x, self.y, self.width, self.height, self.radius),
+                width=max(1, dp(1)),
+            )
+        self.bind(
+            pos=self._sync_shape,
+            size=self._sync_shape,
+            bg_color=self._sync_color,
+            border_color=self._sync_border_color,
+            radius=self._sync_shape,
+        )
 
     def _sync_color(self, *_args):
         self._color.rgba = self.bg_color
+
+    def _sync_border_color(self, *_args):
+        self._border_color.rgba = self.border_color
 
     def _sync_shape(self, *_args):
         self._shape.pos = self.pos
         self._shape.size = self.size
         self._shape.radius = [self.radius]
+        self._border.rounded_rectangle = (self.x, self.y, self.width, self.height, self.radius)
         self.text_size = self.size
+
+    def on_touch_down(self, touch):
+        if self.collide_point(*touch.pos) and not self.disabled:
+            self.focus = True
+            Clock.schedule_once(lambda *_args: setattr(self, "focus", True), 0)
+        return super().on_touch_down(touch)
 
 
 class FontSpinnerOption(SpinnerOption):
@@ -466,12 +546,13 @@ class SoftSpinner(Spinner):
 
     def __init__(self, **kwargs):
         kwargs.setdefault("dropdown_cls", CompactDropDown)
+        font_size = kwargs.pop("font_size", dp(15))
         super().__init__(**kwargs)
         self.background_normal = ""
         self.background_down = ""
         self.background_color = [0, 0, 0, 0]
         self.color = [0.08, 0.08, 0.09, 1]
-        self.font_size = dp(15)
+        self.font_size = font_size
         self.bold = True
         self.halign = "center"
         self.valign = "middle"
@@ -513,12 +594,16 @@ class FilmBorderApp(App):
         self.selected_film = DEFAULT_FILM_NAME
         self.show_film_cover = True
         self.output_aspect_label = DEFAULT_ASPECT_RATIO_LABEL
+        self.camera_brand_text = DEFAULT_CAMERA_BRAND_TEXT
+        self.camera_model_text = ""
+        self.show_camera_info = False
         self.side_border_ratio = DEFAULT_SIDE_BORDER_RATIO
         self.top_border_ratio = DEFAULT_TOP_BORDER_RATIO
         self.busy = False
         self.import_busy = False
         self.root_overlay = None
         self.border_sheet = None
+        self.camera_sheet = None
         self.next_preview_quiet = False
         self.pending_preview_quiet = False
 
@@ -545,15 +630,11 @@ class FilmBorderApp(App):
         return overlay
 
     def _build_header(self) -> BoxLayout:
-        header = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(70), spacing=dp(2))
+        header = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(44), spacing=0)
         title = self._label("Film Border", font_size=dp(30), bold=True, color=[0.05, 0.05, 0.055, 1])
-        subtitle = self._label("打开相册，留下一块干净的胶卷白边", font_size=dp(13), color=[0.42, 0.42, 0.44, 1])
-        title.height = dp(39)
-        subtitle.height = dp(23)
+        title.height = dp(44)
         title.size_hint_y = None
-        subtitle.size_hint_y = None
         header.add_widget(title)
-        header.add_widget(subtitle)
         return header
 
     def _build_preview(self) -> RoundedSurface:
@@ -575,7 +656,7 @@ class FilmBorderApp(App):
             opacity=0,
         )
         self.placeholder = self._label(
-            "打开相册后会在这里预览",
+            "打开照片会在这里预览",
             font_size=dp(15),
             color=[0.55, 0.55, 0.58, 1],
         )
@@ -623,15 +704,26 @@ class FilmBorderApp(App):
             size_hint=(1, 1),
             font_name=self.font_name,
         )
+        self.camera_settings_button = CapsuleButton(
+            text=self._camera_button_text(),
+            font_size=dp(15),
+            size_hint=(1, 1),
+            font_name=self.font_name,
+            normal_color=[0.93, 0.935, 0.945, 1],
+            down_color=[0.88, 0.885, 0.90, 1],
+            color=[0.08, 0.08, 0.09, 1],
+        )
         self.style_spinner.bind(text=self._schedule_preview)
         self.text_align_spinner.bind(text=self._schedule_preview)
+        self.camera_settings_button.bind(on_press=self.open_camera_settings)
         style_row.add_widget(self.style_spinner)
         style_row.add_widget(self.text_align_spinner)
+        style_row.add_widget(self.camera_settings_button)
         panel.add_widget(style_row)
 
         button_row = GridLayout(cols=3, spacing=dp(10), size_hint_y=None, height=dp(52))
         album_button = CapsuleButton(
-            text="打开相册",
+            text="打开照片",
             font_name=self.font_name,
             normal_color=[0.93, 0.935, 0.945, 1],
             down_color=[0.88, 0.885, 0.90, 1],
@@ -657,7 +749,7 @@ class FilmBorderApp(App):
         button_row.add_widget(save_button)
         panel.add_widget(button_row)
 
-        self.status_label = self._label("先打开相册选择一张照片。", font_size=dp(12), color=[0.50, 0.50, 0.53, 1])
+        self.status_label = self._label("先打开照片选择一张图片。", font_size=dp(12), color=[0.50, 0.50, 0.53, 1])
         self.status_label.size_hint_y = None
         self.status_label.height = dp(26)
         self.status_label.shorten = True
@@ -690,17 +782,19 @@ class FilmBorderApp(App):
         )
         return content
 
-    def _open_popup_with_animation(self, popup: Popup, content=None, anchor_bottom: bool = False):
+    def _open_popup_with_animation(self, popup: Popup, content=None, anchor_bottom: bool = True):
         target = content or popup.content
         target.opacity = 0
         popup.open()
         if anchor_bottom:
+            popup.height = min(popup.height, Window.height - dp(24))
             popup.width = min(Window.width * 0.94, dp(420))
             popup.x = (Window.width - popup.width) / 2
             popup.y = dp(10)
 
         def run_animation(*_args):
             if anchor_bottom:
+                popup.height = min(popup.height, Window.height - dp(24))
                 popup.width = min(Window.width * 0.94, dp(420))
                 popup.x = (Window.width - popup.width) / 2
                 popup.y = dp(10)
@@ -732,6 +826,12 @@ class FilmBorderApp(App):
     def _current_film_option(self) -> FilmOption:
         return FILM_BY_LABEL.get(self.selected_film, FILM_OPTIONS[0])
 
+    def _hide_bottom_sheets(self):
+        if self.camera_sheet is not None:
+            self._hide_camera_sheet()
+        if self.border_sheet is not None:
+            self._hide_border_sheet()
+
     def _select_film_from_popup(self, name: str, popup: Popup):
         self._select_film(name)
         self._dismiss_popup_with_animation(popup)
@@ -743,6 +843,7 @@ class FilmBorderApp(App):
         )
 
     def open_film_picker(self, *_args):
+        self._hide_bottom_sheets()
         content = self._white_popup_content(padding=[dp(20), dp(18), dp(20), dp(16)], spacing=dp(12))
 
         title = self._label("选择胶片", font_size=dp(18), color=[0.04, 0.04, 0.05, 1], bold=True)
@@ -756,6 +857,8 @@ class FilmBorderApp(App):
             pos_hint={"x": 0, "y": 0},
             font_name=self.font_name,
         )
+        search_input.bg_color = [0.965, 0.967, 0.972, 1]
+        search_input.border_color = [0.70, 0.71, 0.74, 1]
         # Some desktop IME/font combinations hide TextInput's own text layer.
         # This label mirrors the value inside the same rounded field.
         search_display = Label(
@@ -872,7 +975,6 @@ class FilmBorderApp(App):
         search_input.bind(text=schedule_search)
         render_categories()
         self._open_popup_with_animation(popup, content)
-        Clock.schedule_once(lambda *_clock_args: setattr(search_input, "focus", True), 0.1)
 
     def open_film_group_picker(self, group_name: str, films: list[str]):
         content = self._white_popup_content(padding=[dp(20), dp(18), dp(20), dp(16)], spacing=dp(12))
@@ -927,7 +1029,166 @@ class FilmBorderApp(App):
         content.add_widget(footer)
         self._open_popup_with_animation(popup, content)
 
+    def open_camera_settings(self, *_args):
+        self._toggle_camera_sheet()
+        return
+
+    def _toggle_camera_sheet(self):
+        if self.camera_sheet is not None:
+            self._hide_camera_sheet()
+            return
+        if self.border_sheet is not None:
+            self._hide_border_sheet()
+        self._show_camera_sheet()
+
+    def _show_camera_sheet(self):
+        sheet = BoxLayout(
+            orientation="vertical",
+            padding=[dp(14), dp(12), dp(14), dp(12)],
+            spacing=dp(9),
+            size_hint=(0.94, None),
+            height=dp(252),
+            pos_hint={"x": 0.03, "y": 0.018},
+        )
+        with sheet.canvas.before:
+            Color(1, 1, 1, 1)
+            sheet_bg = RoundedRectangle(pos=sheet.pos, size=sheet.size, radius=[dp(24)])
+        sheet.bind(
+            pos=lambda instance, _value: setattr(sheet_bg, "pos", instance.pos),
+            size=lambda instance, _value: setattr(sheet_bg, "size", instance.size),
+        )
+
+        title = self._label("相机信息", font_size=dp(18), color=[0.04, 0.04, 0.05, 1], bold=True)
+        title.height = dp(28)
+        sheet.add_widget(title)
+
+        camera_brand_spinner = SoftSpinner(
+            text=self.camera_brand_text or CAMERA_BRAND_MENU_LABEL,
+            values=CAMERA_BRAND_CHOICES,
+            font_name=self.font_name,
+            font_size=dp(15),
+            size_hint_y=None,
+            height=dp(46),
+        )
+        camera_brand_spinner.normal_color = [0.965, 0.967, 0.972, 1]
+        camera_brand_spinner.down_color = [0.90, 0.905, 0.915, 1]
+        camera_brand_spinner.color = [0.60, 0.60, 0.64, 1] if not self.camera_brand_text else [0.08, 0.08, 0.09, 1]
+        camera_model_box = FloatLayout(size_hint_y=None, height=dp(46))
+        camera_model_input = SearchInput(
+            text=self.camera_model_text,
+            hint_text="输入型号",
+            font_name=self.font_name,
+            font_size=dp(15),
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+        )
+        camera_model_input.bg_color = [0.965, 0.967, 0.972, 1]
+        camera_model_input.border_color = [0.72, 0.73, 0.76, 1]
+        camera_model_input.hint_text_color = [0.60, 0.60, 0.64, 1]
+        camera_model_input.foreground_color = [0, 0, 0, 0]
+        camera_model_input.disabled = False
+        camera_model_input.readonly = False
+        camera_model_input.input_type = "text"
+        camera_model_display = Label(
+            text=self.camera_model_text,
+            font_name=self.font_name,
+            font_size=dp(15),
+            color=[0.08, 0.08, 0.09, 1],
+            bold=True,
+            halign="left",
+            valign="middle",
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
+            padding=[dp(16), 0],
+        )
+        camera_model_display.bind(size=lambda instance, _value: setattr(instance, "text_size", instance.size))
+        camera_model_box.add_widget(camera_model_input)
+        camera_model_box.add_widget(camera_model_display)
+        sheet.add_widget(camera_brand_spinner)
+        sheet.add_widget(camera_model_box)
+
+        button_row = GridLayout(cols=3, spacing=dp(8), size_hint_y=None, height=dp(42))
+        show_button = CapsuleButton(
+            text="隐藏相机" if self.show_camera_info else "显示相机",
+            font_name=self.font_name,
+            font_size=dp(15),
+            normal_color=[0.93, 0.935, 0.945, 1],
+            down_color=[0.88, 0.885, 0.90, 1],
+            color=[0.04, 0.04, 0.05, 1],
+        )
+        clear_button = CapsuleButton(
+            text="清空",
+            font_name=self.font_name,
+            font_size=dp(15),
+            normal_color=[0.90, 0.905, 0.918, 1],
+            down_color=[0.84, 0.85, 0.865, 1],
+            color=[0.03, 0.03, 0.04, 1],
+        )
+        done_button = CapsuleButton(text="完成", font_name=self.font_name, font_size=dp(15), color=[1, 1, 1, 1])
+        button_row.add_widget(show_button)
+        button_row.add_widget(clear_button)
+        button_row.add_widget(done_button)
+        sheet.add_widget(button_row)
+
+        def refresh_camera_button():
+            self._sync_camera_settings_button()
+            show_button.text = "隐藏相机" if self.show_camera_info else "显示相机"
+
+        def on_camera_brand_change(_spinner, value: str):
+            self.camera_brand_text = "" if value in ("无", "None", CAMERA_BRAND_MENU_LABEL) else value
+            _spinner.color = [0.60, 0.60, 0.64, 1] if not self.camera_brand_text else [0.08, 0.08, 0.09, 1]
+            if self.camera_brand_text.strip():
+                self.show_camera_info = True
+            refresh_camera_button()
+            self._schedule_preview(delay=0, quiet=True)
+
+        def on_camera_model_change(_input, value: str):
+            camera_model_display.text = value
+            self.camera_model_text = value
+            if value.strip() or self.camera_brand_text.strip():
+                self.show_camera_info = True
+            refresh_camera_button()
+            self._schedule_preview(delay=0.18, quiet=True)
+
+        def toggle_camera_info(*_button_args):
+            self.show_camera_info = not self.show_camera_info
+            refresh_camera_button()
+            self._schedule_preview(delay=0, quiet=True)
+
+        def clear_camera(*_button_args):
+            camera_brand_spinner.text = CAMERA_BRAND_MENU_LABEL
+            camera_model_input.text = ""
+            self.camera_brand_text = ""
+            self.camera_model_text = ""
+            self.show_camera_info = False
+            refresh_camera_button()
+            self._schedule_preview(delay=0, quiet=True)
+
+        camera_brand_spinner.bind(text=on_camera_brand_change)
+        camera_model_input.bind(text=on_camera_model_change)
+        show_button.bind(on_release=toggle_camera_info)
+        clear_button.bind(on_release=clear_camera)
+        done_button.bind(on_release=lambda *_button_args: self._hide_camera_sheet())
+
+        self.camera_sheet = sheet
+        if self.root_overlay is not None:
+            self.root_overlay.add_widget(sheet)
+        sheet.opacity = 0
+        Clock.schedule_once(lambda *_args: self._animate_border_sheet_in(sheet), 0)
+
+    def _hide_camera_sheet(self):
+        sheet = self.camera_sheet
+        if sheet is None:
+            return
+        self.camera_sheet = None
+        Animation.cancel_all(sheet)
+        animation = Animation(opacity=0, y=sheet.y - dp(12), d=0.12, t="in_quad")
+        animation.bind(on_complete=lambda *_args: self.root_overlay.remove_widget(sheet) if self.root_overlay else None)
+        animation.start(sheet)
+
     def open_border_settings(self, *_args):
+        if self.camera_sheet is not None:
+            self._hide_camera_sheet()
         self._toggle_border_sheet()
         return
 
@@ -1126,7 +1387,7 @@ class FilmBorderApp(App):
             padding=[dp(14), dp(10), dp(14), dp(10)],
             spacing=dp(7),
             size_hint=(0.94, None),
-            height=dp(276),
+            height=dp(286),
             pos_hint={"x": 0.03, "y": 0.018},
         )
         with sheet.canvas.before:
@@ -1250,6 +1511,7 @@ class FilmBorderApp(App):
     def choose_photo(self, *_args):
         if self.busy or self.import_busy:
             return
+        self._hide_bottom_sheets()
         if platform == "android":
             self._open_android_gallery()
             return
@@ -1457,7 +1719,7 @@ class FilmBorderApp(App):
         self.import_busy = False
         self.input_path = None
         self.preview_input_path = None
-        self.placeholder.text = "打开相册后会在这里预览"
+        self.placeholder.text = "打开照片会在这里预览"
         self.placeholder.opacity = 1
         self.set_status(f"照片读取失败：{self._friendly_error(message)}")
         if self.pending_preview:
@@ -1540,7 +1802,7 @@ class FilmBorderApp(App):
             output_path = imports_dir / f"album_{stamp}{ext}"
             input_stream = resolver.openInputStream(uri)
             if input_stream is None:
-                raise ValueError("无法打开相册图片流。")
+                raise ValueError("无法读取照片图片流。")
             self._copy_android_stream_to_path(input_stream, output_path)
             try:
                 self._validate_image_path(output_path)
@@ -1558,7 +1820,7 @@ class FilmBorderApp(App):
 
         input_stream = resolver.openInputStream(uri)
         if input_stream is None:
-            raise ValueError("无法打开相册图片流。")
+            raise ValueError("无法读取照片图片流。")
 
         mime_type = (resolver.getType(uri) or "").lower()
         if mime_type in ("image/heic", "image/heif"):
@@ -1676,7 +1938,7 @@ class FilmBorderApp(App):
             self.pending_preview_quiet = self.pending_preview_quiet or quiet
             return
         if not self.input_path:
-            self.set_status("请先打开相册选择一张照片。")
+            self.set_status("请先打开照片选择一张图片。")
             return
 
         self._start_render(save=False, quiet=quiet)
@@ -1685,7 +1947,7 @@ class FilmBorderApp(App):
         if self.busy or self.import_busy:
             return
         if not self.input_path:
-            self.set_status("请先打开相册选择一张照片。")
+            self.set_status("请先打开照片选择一张图片。")
             return
 
         self._start_render(save=True)
@@ -1702,6 +1964,9 @@ class FilmBorderApp(App):
         style_key = self._current_style_key()
         text_align = self._current_text_align()
         show_film_cover = self.show_film_cover
+        camera_logo, camera_logo_path = self._current_camera_logo()
+        camera_model = self._current_camera_name(camera_logo)
+        show_camera_info = self.show_camera_info and bool(camera_logo or camera_model.strip())
         blur_background = style_key == "blur_background"
         output_aspect_ratio = self._current_output_aspect_ratio()
         side_border_ratio = self.side_border_ratio
@@ -1712,6 +1977,10 @@ class FilmBorderApp(App):
                 save,
                 input_path,
                 film_option,
+                camera_logo,
+                camera_logo_path,
+                camera_model,
+                show_camera_info,
                 style_key,
                 text_align,
                 show_film_cover,
@@ -1730,6 +1999,10 @@ class FilmBorderApp(App):
         save: bool,
         input_path: Path,
         film_option: FilmOption,
+        camera_logo: str,
+        camera_logo_path: str | None,
+        camera_model: str,
+        show_camera_info: bool,
         style_key: str,
         text_align: str,
         show_film_cover: bool,
@@ -1747,6 +2020,10 @@ class FilmBorderApp(App):
                 film_name=film_option.name,
                 film_type=film_option.film_type,
                 film_cover_path=film_option.cover_path if show_film_cover else None,
+                camera_logo=camera_logo,
+                camera_logo_path=camera_logo_path,
+                camera_model=camera_model,
+                show_camera_info=show_camera_info,
                 style_key=style_key,
                 text_align=text_align,
                 side_border_ratio=side_border_ratio,
@@ -1787,6 +2064,20 @@ class FilmBorderApp(App):
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
+    def _camera_button_text(self) -> str:
+        brand = (self.camera_brand_text or "").strip()
+        model = (self.camera_model_text or "").strip()
+        if self.show_camera_info and (brand or model):
+            return "相机开启"
+        if brand or model:
+            return "相机隐藏"
+        return "相机设置"
+
+    def _sync_camera_settings_button(self):
+        button = getattr(self, "camera_settings_button", None)
+        if button is not None:
+            button.text = self._camera_button_text()
+
     def _current_style_key(self) -> str:
         return STYLE_BY_LABEL.get(self.style_spinner.text, "classic_white")
 
@@ -1795,6 +2086,24 @@ class FilmBorderApp(App):
 
     def _current_output_aspect_ratio(self) -> tuple[float, float] | None:
         return ASPECT_RATIO_BY_LABEL.get(self.output_aspect_label)
+
+    def _current_camera_logo(self) -> tuple[str, str | None]:
+        raw_brand = (self.camera_brand_text or "").strip()
+        if not raw_brand:
+            return "", None
+
+        logo_key, display_text = CAMERA_LOGO_ALIASES.get(raw_brand.casefold(), ("", raw_brand))
+        logo_path = CAMERA_LOGO_DIR / f"{logo_key}.png" if logo_key else None
+        if logo_path is not None and logo_path.exists():
+            return display_text, str(logo_path)
+        return display_text, None
+
+    def _current_camera_name(self, brand_display: str = "") -> str:
+        model = (self.camera_model_text or "").strip()
+        brand = (brand_display or "").strip()
+        if brand and model:
+            return f"{brand} {model}"
+        return brand or model
 
     def _schedule_pending_preview(self):
         delay = self.pending_preview_delay
