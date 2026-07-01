@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlparse
 
 from kivy.animation import Animation
 from kivy.app import App
+from kivy.core.image import Image as CoreImage
 from kivy.clock import Clock
 from kivy.core.text import LabelBase
 from kivy.core.window import Window
@@ -137,6 +138,16 @@ DEFAULT_TOP_BORDER_RATIO = 0.055
 MIN_BORDER_RATIO = 0.015
 MAX_BORDER_RATIO = 0.16
 MAX_SEARCH_RESULTS = 80
+ASPECT_RATIO_PRESETS = [
+    ("原始", None),
+    ("1:1", (1.0, 1.0)),
+    ("3:2", (3.0, 2.0)),
+    ("4:3", (4.0, 3.0)),
+    ("6:7", (6.0, 7.0)),
+    ("16:9", (16.0, 9.0)),
+]
+ASPECT_RATIO_BY_LABEL = {label: ratio for label, ratio in ASPECT_RATIO_PRESETS}
+DEFAULT_ASPECT_RATIO_LABEL = "原始"
 
 
 @dataclass(frozen=True)
@@ -495,31 +506,43 @@ class FilmBorderApp(App):
         self.input_path: Path | None = None
         self.preview_input_path: Path | None = None
         self.preview_path: Path | None = None
+        self.preview_core_image = None
         self.preview_event = None
         self.pending_preview = False
+        self.pending_preview_delay = 0.45
         self.selected_film = DEFAULT_FILM_NAME
         self.show_film_cover = True
+        self.output_aspect_label = DEFAULT_ASPECT_RATIO_LABEL
         self.side_border_ratio = DEFAULT_SIDE_BORDER_RATIO
         self.top_border_ratio = DEFAULT_TOP_BORDER_RATIO
         self.busy = False
         self.import_busy = False
+        self.root_overlay = None
+        self.border_sheet = None
+        self.next_preview_quiet = False
+        self.pending_preview_quiet = False
 
         if platform not in ("android", "ios"):
             Window.size = (430, 760)
         Window.clearcolor = (0.957, 0.957, 0.970, 1)
 
+        overlay = FloatLayout()
         root = BoxLayout(
             orientation="vertical",
             padding=[dp(18), dp(16), dp(18), dp(16)],
             spacing=dp(14),
+            size_hint=(1, 1),
+            pos_hint={"x": 0, "y": 0},
         )
 
         root.add_widget(self._build_header())
         root.add_widget(self._build_preview())
         root.add_widget(self._build_controls())
         root.opacity = 0
+        overlay.add_widget(root)
+        self.root_overlay = overlay
         Clock.schedule_once(lambda *_args: Animation(opacity=1, d=0.28, t="out_quad").start(root), 0)
-        return root
+        return overlay
 
     def _build_header(self) -> BoxLayout:
         header = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(70), spacing=dp(2))
@@ -667,12 +690,20 @@ class FilmBorderApp(App):
         )
         return content
 
-    def _open_popup_with_animation(self, popup: Popup, content=None):
+    def _open_popup_with_animation(self, popup: Popup, content=None, anchor_bottom: bool = False):
         target = content or popup.content
         target.opacity = 0
         popup.open()
+        if anchor_bottom:
+            popup.width = min(Window.width * 0.94, dp(420))
+            popup.x = (Window.width - popup.width) / 2
+            popup.y = dp(10)
 
         def run_animation(*_args):
+            if anchor_bottom:
+                popup.width = min(Window.width * 0.94, dp(420))
+                popup.x = (Window.width - popup.width) / 2
+                popup.y = dp(10)
             Animation.cancel_all(target)
             end_y = target.y
             target.y = end_y - dp(18)
@@ -897,10 +928,13 @@ class FilmBorderApp(App):
         self._open_popup_with_animation(popup, content)
 
     def open_border_settings(self, *_args):
+        self._toggle_border_sheet()
+        return
+
         content = BoxLayout(
             orientation="vertical",
-            padding=[dp(20), dp(18), dp(20), dp(16)],
-            spacing=dp(14),
+            padding=[dp(16), dp(12), dp(16), dp(12)],
+            spacing=dp(8),
         )
         with content.canvas.before:
             Color(1, 1, 1, 1)
@@ -910,45 +944,76 @@ class FilmBorderApp(App):
             size=lambda instance, _value: setattr(content_bg, "size", instance.size),
         )
 
-        top_label = self._label("", font_size=dp(16), color=[0.04, 0.04, 0.05, 1], bold=True)
-        top_label.height = dp(28)
+        top_label = self._label("", font_size=dp(13), color=[0.04, 0.04, 0.05, 1], bold=True)
+        top_label.height = dp(22)
         top_slider = Slider(
             min=MIN_BORDER_RATIO,
             max=MAX_BORDER_RATIO,
             value=self.top_border_ratio,
             step=0.001,
             size_hint_y=None,
-            height=dp(44),
+            height=dp(34),
         )
 
-        side_label = self._label("", font_size=dp(16), color=[0.04, 0.04, 0.05, 1], bold=True)
-        side_label.height = dp(28)
+        side_label = self._label("", font_size=dp(13), color=[0.04, 0.04, 0.05, 1], bold=True)
+        side_label.height = dp(22)
         side_slider = Slider(
             min=MIN_BORDER_RATIO,
             max=MAX_BORDER_RATIO,
             value=self.side_border_ratio,
             step=0.001,
             size_hint_y=None,
-            height=dp(44),
+            height=dp(34),
         )
+
+        aspect_label = self._label("输出比例", font_size=dp(12), color=[0.04, 0.04, 0.05, 1], bold=True)
+        aspect_label.height = dp(18)
+        aspect_row = GridLayout(cols=len(ASPECT_RATIO_PRESETS), spacing=dp(6), size_hint_y=None, height=dp(34))
+        aspect_buttons: dict[str, CapsuleButton] = {}
+
+        def sync_aspect_buttons():
+            for label, button in aspect_buttons.items():
+                selected = label == self.output_aspect_label
+                button.normal_color = [0.08, 0.08, 0.09, 1] if selected else [0.93, 0.935, 0.945, 1]
+                button.down_color = [0.16, 0.16, 0.17, 1] if selected else [0.88, 0.885, 0.90, 1]
+                button.color = [1, 1, 1, 1] if selected else [0.04, 0.04, 0.05, 1]
+
+        def select_aspect(label: str):
+            self.output_aspect_label = label
+            sync_aspect_buttons()
+            self._schedule_preview(delay=0, quiet=True)
+
+        for label, _ratio in ASPECT_RATIO_PRESETS:
+            aspect_button = CapsuleButton(
+                text=label,
+                font_name=self.font_name,
+                font_size=dp(11),
+                size_hint=(1, 1),
+                normal_color=[0.93, 0.935, 0.945, 1],
+                down_color=[0.88, 0.885, 0.90, 1],
+                color=[0.04, 0.04, 0.05, 1],
+            )
+            aspect_button.bind(on_release=lambda _button, selected_label=label: select_aspect(selected_label))
+            aspect_buttons[label] = aspect_button
+            aspect_row.add_widget(aspect_button)
+        sync_aspect_buttons()
 
         cover_button = CapsuleButton(
             text="显示胶卷图片" if self.show_film_cover else "隐藏胶卷图片",
             font_name=self.font_name,
             size_hint_y=None,
-            height=dp(48),
+            height=dp(42),
             normal_color=[0.93, 0.935, 0.945, 1],
             down_color=[0.88, 0.885, 0.90, 1],
             color=[0.04, 0.04, 0.05, 1],
         )
-
         def update_label(label: Label, prefix: str, value: float):
             label.text = f"{prefix} {value * 100:.1f}%"
 
         def on_top_change(_slider, value: float):
             self.top_border_ratio = value
             update_label(top_label, "调整上边框", value)
-            self._schedule_preview()
+            self._schedule_preview(delay=0.06)
 
         def on_side_change(_slider, value: float):
             self.side_border_ratio = value
@@ -958,7 +1023,12 @@ class FilmBorderApp(App):
         update_label(top_label, "调整上边框", self.top_border_ratio)
         update_label(side_label, "调整左右边框", self.side_border_ratio)
         top_slider.bind(value=on_top_change)
-        side_slider.bind(value=on_side_change)
+        def on_side_change_live(_slider, value: float):
+            self.side_border_ratio = value
+            side_label.text = f"调整左右边框 {value * 100:.1f}%"
+            self._schedule_preview(delay=0.06)
+
+        side_slider.bind(value=on_side_change_live)
 
         def toggle_cover(*_button_args):
             self.show_film_cover = not self.show_film_cover
@@ -993,18 +1063,189 @@ class FilmBorderApp(App):
             background="",
             background_color=[1, 1, 1, 0],
             content=content,
-            size_hint=(0.88, None),
-            height=dp(382),
+            size_hint=(None, None),
+            height=dp(282),
             auto_dismiss=True,
         )
 
         def reset_values(*_reset_args):
             top_slider.value = DEFAULT_TOP_BORDER_RATIO
             side_slider.value = DEFAULT_SIDE_BORDER_RATIO
+            self.output_aspect_label = DEFAULT_ASPECT_RATIO_LABEL
+            sync_aspect_buttons()
+            self._schedule_preview(delay=0, quiet=True)
 
         reset_button.bind(on_release=reset_values)
         done_button.bind(on_release=lambda *_button_args: self._dismiss_popup_with_animation(popup))
-        self._open_popup_with_animation(popup, content)
+        self._open_popup_with_animation(popup, content, anchor_bottom=True)
+
+    def _toggle_border_sheet(self):
+        if self.border_sheet is not None:
+            self._hide_border_sheet()
+            return
+        self._show_border_sheet()
+
+    def _make_aspect_controls(self):
+        aspect_label = self._label("输出比例", font_size=dp(12), color=[0.04, 0.04, 0.05, 1], bold=True)
+        aspect_label.height = dp(18)
+        aspect_row = GridLayout(cols=len(ASPECT_RATIO_PRESETS), spacing=dp(6), size_hint_y=None, height=dp(34))
+        aspect_buttons: dict[str, CapsuleButton] = {}
+
+        def sync_aspect_buttons():
+            for label, button in aspect_buttons.items():
+                selected = label == self.output_aspect_label
+                button.normal_color = [0.08, 0.08, 0.09, 1] if selected else [0.93, 0.935, 0.945, 1]
+                button.down_color = [0.16, 0.16, 0.17, 1] if selected else [0.88, 0.885, 0.90, 1]
+                button.color = [1, 1, 1, 1] if selected else [0.04, 0.04, 0.05, 1]
+
+        def select_aspect(label: str):
+            self.output_aspect_label = label
+            sync_aspect_buttons()
+            self._schedule_preview(delay=0, quiet=True)
+
+        for label, _ratio in ASPECT_RATIO_PRESETS:
+            aspect_button = CapsuleButton(
+                text=label,
+                font_name=self.font_name,
+                font_size=dp(11),
+                size_hint=(1, 1),
+                normal_color=[0.93, 0.935, 0.945, 1],
+                down_color=[0.88, 0.885, 0.90, 1],
+                color=[0.04, 0.04, 0.05, 1],
+            )
+            aspect_button.bind(on_release=lambda _button, selected_label=label: select_aspect(selected_label))
+            aspect_buttons[label] = aspect_button
+            aspect_row.add_widget(aspect_button)
+
+        sync_aspect_buttons()
+        return aspect_label, aspect_row, sync_aspect_buttons
+
+    def _show_border_sheet(self):
+        sheet = BoxLayout(
+            orientation="vertical",
+            padding=[dp(14), dp(10), dp(14), dp(10)],
+            spacing=dp(7),
+            size_hint=(0.94, None),
+            height=dp(276),
+            pos_hint={"x": 0.03, "y": 0.018},
+        )
+        with sheet.canvas.before:
+            Color(1, 1, 1, 1)
+            sheet_bg = RoundedRectangle(pos=sheet.pos, size=sheet.size, radius=[dp(24)])
+        sheet.bind(
+            pos=lambda instance, _value: setattr(sheet_bg, "pos", instance.pos),
+            size=lambda instance, _value: setattr(sheet_bg, "size", instance.size),
+        )
+
+        top_label = self._label("", font_size=dp(12), color=[0.04, 0.04, 0.05, 1], bold=True)
+        top_label.height = dp(18)
+        top_slider = Slider(
+            min=MIN_BORDER_RATIO,
+            max=MAX_BORDER_RATIO,
+            value=self.top_border_ratio,
+            step=0.001,
+            size_hint_y=None,
+            height=dp(30),
+        )
+
+        side_label = self._label("", font_size=dp(12), color=[0.04, 0.04, 0.05, 1], bold=True)
+        side_label.height = dp(18)
+        side_slider = Slider(
+            min=MIN_BORDER_RATIO,
+            max=MAX_BORDER_RATIO,
+            value=self.side_border_ratio,
+            step=0.001,
+            size_hint_y=None,
+            height=dp(30),
+        )
+
+        def update_label(label: Label, prefix: str, value: float):
+            label.text = f"{prefix} {value * 100:.1f}%"
+
+        def on_top_change(_slider, value: float):
+            self.top_border_ratio = value
+            update_label(top_label, "调整上边框", value)
+            self._schedule_preview(delay=0, quiet=True)
+
+        def on_side_change(_slider, value: float):
+            self.side_border_ratio = value
+            update_label(side_label, "调整左右边框", value)
+            self._schedule_preview(delay=0, quiet=True)
+
+        update_label(top_label, "调整上边框", self.top_border_ratio)
+        update_label(side_label, "调整左右边框", self.side_border_ratio)
+        top_slider.bind(value=on_top_change)
+        side_slider.bind(value=on_side_change)
+
+        aspect_label, aspect_row, sync_aspect_buttons = self._make_aspect_controls()
+
+        cover_button = CapsuleButton(
+            text="显示胶卷图片" if self.show_film_cover else "隐藏胶卷图片",
+            font_name=self.font_name,
+            size_hint_y=None,
+            height=dp(40),
+            normal_color=[0.93, 0.935, 0.945, 1],
+            down_color=[0.88, 0.885, 0.90, 1],
+            color=[0.04, 0.04, 0.05, 1],
+        )
+        reset_button = CapsuleButton(
+            text="重置",
+            font_name=self.font_name,
+            normal_color=[0.90, 0.905, 0.918, 1],
+            down_color=[0.84, 0.85, 0.865, 1],
+            color=[0.03, 0.03, 0.04, 1],
+        )
+        done_button = CapsuleButton(text="完成", font_name=self.font_name, color=[1, 1, 1, 1])
+
+        def toggle_cover(*_button_args):
+            self.show_film_cover = not self.show_film_cover
+            cover_button.text = "显示胶卷图片" if self.show_film_cover else "隐藏胶卷图片"
+            self._schedule_preview(delay=0, quiet=True)
+
+        def reset_values(*_reset_args):
+            top_slider.value = DEFAULT_TOP_BORDER_RATIO
+            side_slider.value = DEFAULT_SIDE_BORDER_RATIO
+            self.output_aspect_label = DEFAULT_ASPECT_RATIO_LABEL
+            sync_aspect_buttons()
+            self._schedule_preview(delay=0, quiet=True)
+
+        cover_button.bind(on_release=toggle_cover)
+        reset_button.bind(on_release=reset_values)
+        done_button.bind(on_release=lambda *_button_args: self._hide_border_sheet())
+
+        sheet.add_widget(top_label)
+        sheet.add_widget(top_slider)
+        sheet.add_widget(side_label)
+        sheet.add_widget(side_slider)
+        sheet.add_widget(aspect_label)
+        sheet.add_widget(aspect_row)
+        button_row = GridLayout(cols=3, spacing=dp(8), size_hint_y=None, height=dp(40))
+        button_row.add_widget(cover_button)
+        button_row.add_widget(reset_button)
+        button_row.add_widget(done_button)
+        sheet.add_widget(button_row)
+
+        self.border_sheet = sheet
+        if self.root_overlay is not None:
+            self.root_overlay.add_widget(sheet)
+        sheet.opacity = 0
+        Clock.schedule_once(lambda *_args: self._animate_border_sheet_in(sheet), 0)
+
+    def _animate_border_sheet_in(self, sheet: BoxLayout):
+        Animation.cancel_all(sheet)
+        end_y = sheet.y
+        sheet.y = end_y - dp(18)
+        Animation(opacity=1, y=end_y, d=0.16, t="out_cubic").start(sheet)
+
+    def _hide_border_sheet(self):
+        sheet = self.border_sheet
+        if sheet is None:
+            return
+        self.border_sheet = None
+        Animation.cancel_all(sheet)
+        animation = Animation(opacity=0, y=sheet.y - dp(12), d=0.12, t="in_quad")
+        animation.bind(on_complete=lambda *_args: self.root_overlay.remove_widget(sheet) if self.root_overlay else None)
+        animation.start(sheet)
 
     def choose_photo(self, *_args):
         if self.busy or self.import_busy:
@@ -1014,19 +1255,24 @@ class FilmBorderApp(App):
             return
         self._open_desktop_album_picker()
 
-    def _schedule_preview(self, *_args):
+    def _schedule_preview(self, *_args, delay: float = 0.45, quiet: bool = False):
         if not self.input_path:
             return
         if self.busy or self.import_busy:
             self.pending_preview = True
+            self.pending_preview_delay = min(self.pending_preview_delay, delay)
+            self.pending_preview_quiet = self.pending_preview_quiet or quiet
             return
         if self.preview_event is not None:
             self.preview_event.cancel()
-        self.preview_event = Clock.schedule_once(self._run_scheduled_preview, 0.45)
+        self.next_preview_quiet = quiet
+        self.preview_event = Clock.schedule_once(self._run_scheduled_preview, delay)
 
     def _run_scheduled_preview(self, *_args):
         self.preview_event = None
-        self.preview_current()
+        quiet = self.next_preview_quiet
+        self.next_preview_quiet = False
+        self.preview_current(quiet=quiet)
 
     def _open_desktop_album_picker(self):
         try:
@@ -1421,18 +1667,19 @@ class FilmBorderApp(App):
         except Exception as exc:
             raise ValueError("照片格式无法读取，请换一张 JPG/PNG，或在相册中重新导出后再选。") from exc
 
-    def preview_current(self, *_args):
+    def preview_current(self, *_args, quiet: bool = False):
         if self.preview_event is not None:
             self.preview_event.cancel()
             self.preview_event = None
         if self.busy or self.import_busy:
             self.pending_preview = True
+            self.pending_preview_quiet = self.pending_preview_quiet or quiet
             return
         if not self.input_path:
             self.set_status("请先打开相册选择一张照片。")
             return
 
-        self._start_render(save=False)
+        self._start_render(save=False, quiet=quiet)
 
     def save_current(self, *_args):
         if self.busy or self.import_busy:
@@ -1443,17 +1690,20 @@ class FilmBorderApp(App):
 
         self._start_render(save=True)
 
-    def _start_render(self, save: bool):
+    def _start_render(self, save: bool, quiet: bool = False):
         self.busy = True
-        if not save:
+        if not save and not quiet:
             self.placeholder.text = "正在生成预览。"
             self._start_preview_loading()
-        self.set_status("正在保存成片。" if save else "正在生成预览。")
+        if save or not quiet:
+            self.set_status("正在保存成片。" if save else "正在生成预览。")
         input_path = self.input_path if save else (self.preview_input_path or self.input_path)
         film_option = self._current_film_option()
         style_key = self._current_style_key()
         text_align = self._current_text_align()
         show_film_cover = self.show_film_cover
+        blur_background = style_key == "blur_background"
+        output_aspect_ratio = self._current_output_aspect_ratio()
         side_border_ratio = self.side_border_ratio
         top_border_ratio = self.top_border_ratio
         thread = threading.Thread(
@@ -1465,8 +1715,11 @@ class FilmBorderApp(App):
                 style_key,
                 text_align,
                 show_film_cover,
+                blur_background,
+                output_aspect_ratio,
                 side_border_ratio,
                 top_border_ratio,
+                quiet,
             ),
             daemon=True,
         )
@@ -1480,8 +1733,11 @@ class FilmBorderApp(App):
         style_key: str,
         text_align: str,
         show_film_cover: bool,
+        blur_background: bool,
+        output_aspect_ratio: tuple[float, float] | None,
         side_border_ratio: float,
         top_border_ratio: float,
+        quiet: bool,
     ):
         try:
             output = self._make_output_path(save)
@@ -1495,11 +1751,13 @@ class FilmBorderApp(App):
                 text_align=text_align,
                 side_border_ratio=side_border_ratio,
                 top_border_ratio=top_border_ratio,
+                blur_background=blur_background,
+                output_aspect_ratio=output_aspect_ratio,
                 max_long_edge=None if save else 1800,
             )
             if platform == "android" and save:
                 self._scan_android_gallery(output)
-            Clock.schedule_once(lambda *_args: self._render_done(output, save))
+            Clock.schedule_once(lambda *_args: self._render_done(output, save, quiet))
         except Exception as exc:
             message = str(exc)
             Clock.schedule_once(lambda *_args: self._render_failed(message))
@@ -1535,16 +1793,35 @@ class FilmBorderApp(App):
     def _current_text_align(self) -> str:
         return TEXT_ALIGN_BY_LABEL.get(self.text_align_spinner.text, "center")
 
-    def _render_done(self, output: Path, save: bool):
+    def _current_output_aspect_ratio(self) -> tuple[float, float] | None:
+        return ASPECT_RATIO_BY_LABEL.get(self.output_aspect_label)
+
+    def _schedule_pending_preview(self):
+        delay = self.pending_preview_delay
+        quiet = self.pending_preview_quiet
+        self.pending_preview = False
+        self.pending_preview_delay = 0.45
+        self.pending_preview_quiet = False
+        self._schedule_preview(delay=delay, quiet=quiet)
+
+    def _render_done(self, output: Path, save: bool, quiet: bool = False):
         self.busy = False
         if save:
             self.set_status(f"已保存：{output}")
             if self.pending_preview:
-                self.pending_preview = False
-                self._schedule_preview()
+                self._schedule_pending_preview()
             return
 
         self.preview_path = output
+        if quiet and self.preview_image.source:
+            Animation.cancel_all(self.preview_image)
+            self.preview_core_image = CoreImage(image_source(output), nocache=True)
+            self.preview_image.texture = self.preview_core_image.texture
+            self.preview_image.opacity = 1
+            if self.pending_preview:
+                self._schedule_pending_preview()
+            return
+
         self._stop_preview_loading()
         Animation.cancel_all(self.placeholder)
         Animation(opacity=0, d=0.16, t="out_quad").start(self.placeholder)
@@ -1557,8 +1834,7 @@ class FilmBorderApp(App):
         Animation(opacity=1, d=0.26, t="out_quad").start(self.preview_image)
         self.set_status("预览已更新。")
         if self.pending_preview:
-            self.pending_preview = False
-            self._schedule_preview()
+            self._schedule_pending_preview()
 
     def _render_failed(self, message: str):
         self.busy = False
@@ -1569,8 +1845,7 @@ class FilmBorderApp(App):
         Animation(opacity=1, d=0.18, t="out_quad").start(self.placeholder)
         self.set_status(f"处理失败：{self._friendly_error(message)}")
         if self.pending_preview:
-            self.pending_preview = False
-            self._schedule_preview()
+            self._schedule_pending_preview()
 
     def _start_preview_loading(self):
         self.placeholder.opacity = max(self.placeholder.opacity, 0.45)

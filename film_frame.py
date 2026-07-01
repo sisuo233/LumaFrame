@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 
 try:
@@ -52,6 +52,12 @@ STYLE_PRESETS: dict[str, FrameStyle] = {
         background=(232, 246, 238),
         text=(22, 72, 55),
         caption_hint=(80, 140, 112),
+    ),
+    "blur_background": FrameStyle(
+        label="虚化背景",
+        background=(20, 20, 20),
+        text=(255, 255, 255),
+        caption_hint=(220, 220, 224),
     ),
 }
 
@@ -168,6 +174,72 @@ def _resize_to_fit(image: Image.Image, max_width: int, max_height: int) -> Image
     return image.resize(new_size, RESAMPLE_LANCZOS)
 
 
+def _resize_to_cover(image: Image.Image, target_width: int, target_height: int) -> Image.Image:
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return Image.new("RGB", (target_width, target_height), (18, 18, 18))
+    scale = max(target_width / width, target_height / height)
+    resized = image.resize((max(1, int(width * scale)), max(1, int(height * scale))), RESAMPLE_LANCZOS)
+    left = max(0, (resized.width - target_width) // 2)
+    top = max(0, (resized.height - target_height) // 2)
+    return resized.crop((left, top, left + target_width, top + target_height))
+
+
+def _make_blurred_background(image: Image.Image, width: int, height: int) -> Image.Image:
+    background = _resize_to_cover(image, width, height)
+    blur_radius = max(16, int(width * 0.028))
+    background = background.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    background = ImageEnhance.Brightness(background).enhance(0.58)
+    background = ImageEnhance.Contrast(background).enhance(0.92)
+    return background.convert("RGB")
+
+
+def _paste_photo_with_depth(canvas: Image.Image, photo: Image.Image, x: int, y: int) -> Image.Image:
+    radius = max(10, int(photo.width * 0.018))
+    shadow_radius = max(12, int(photo.width * 0.022))
+    shadow_alpha = Image.new("L", canvas.size, 0)
+    shadow_draw = ImageDraw.Draw(shadow_alpha)
+    shadow_offset = max(4, int(photo.width * 0.008))
+    shadow_draw.rounded_rectangle(
+        (x, y + shadow_offset, x + photo.width, y + photo.height + shadow_offset),
+        radius=radius,
+        fill=150,
+    )
+    shadow_alpha = shadow_alpha.filter(ImageFilter.GaussianBlur(radius=shadow_radius))
+    shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    shadow.putalpha(shadow_alpha)
+
+    base = Image.alpha_composite(canvas.convert("RGBA"), shadow)
+    mask = Image.new("L", photo.size, 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle((0, 0, photo.width, photo.height), radius=radius, fill=255)
+    base.paste(photo.convert("RGBA"), (x, y), mask)
+    return base.convert("RGB")
+
+
+def _size_for_aspect(width: int, height: int, aspect_ratio: tuple[float, float] | None) -> tuple[int, int]:
+    if not aspect_ratio:
+        return width, height
+    ratio_width, ratio_height = aspect_ratio
+    if ratio_width <= 0 or ratio_height <= 0:
+        return width, height
+
+    base_ratio = ratio_width / ratio_height
+    if width > height:
+        target_ratio = max(base_ratio, 1 / base_ratio)
+    elif height > width:
+        target_ratio = min(base_ratio, 1 / base_ratio)
+    else:
+        target_ratio = base_ratio
+
+    current_ratio = width / height
+    if abs(current_ratio - target_ratio) < 0.001:
+        return width, height
+    if current_ratio > target_ratio:
+        return width, max(height, int(round(width / target_ratio)))
+    return max(width, int(round(height * target_ratio))), height
+
+
 def _text_metrics(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -188,6 +260,8 @@ def render_film_frame(
     text_align: str = "center",
     side_border_ratio: float = 0.055,
     top_border_ratio: float = 0.055,
+    blur_background: bool = False,
+    output_aspect_ratio: tuple[float, float] | None = None,
     max_long_edge: int | None = 4096,
     font_path: str | None = None,
 ) -> Path:
@@ -196,6 +270,7 @@ def render_film_frame(
         style_key = "classic_white"
 
     style = STYLE_PRESETS[style_key]
+    blur_background = blur_background or style_key == "blur_background"
     image = _open_image(input_path, max_long_edge=max_long_edge)
     width, height = image.size
     cover_image = _open_cover_image(film_cover_path)
@@ -204,28 +279,40 @@ def render_film_frame(
     top = max(12, int(width * top_border_ratio))
     bottom = max(96, int(width * 0.155)) if cover_image else max(72, int(width * 0.135))
 
-    canvas_width = width + side * 2
-    canvas_height = height + top + bottom
-    canvas = Image.new("RGB", (canvas_width, canvas_height), style.background)
+    content_width = width + side * 2
+    content_height = height + top + bottom
+    canvas_width, canvas_height = _size_for_aspect(content_width, content_height, output_aspect_ratio)
+    content_x = (canvas_width - content_width) // 2
+    content_y = (canvas_height - content_height) // 2
+    canvas = (
+        _make_blurred_background(image, canvas_width, canvas_height)
+        if blur_background
+        else Image.new("RGB", (canvas_width, canvas_height), style.background)
+    )
     min_side = max(8, int(side * 0.35))
     if image_align == "left":
-        image_x = min_side
+        image_x = content_x + min_side
     elif image_align == "right":
-        image_x = canvas_width - width - min_side
+        image_x = content_x + content_width - width - min_side
     else:
-        image_x = (canvas_width - width) // 2
-    canvas.paste(image, (image_x, top))
+        image_x = content_x + (content_width - width) // 2
+    image_y = content_y + top
+    if blur_background:
+        canvas = _paste_photo_with_depth(canvas, image, image_x, image_y)
+    else:
+        canvas.paste(image, (image_x, image_y))
 
     caption = film_name.strip()
     if caption or cover_image:
         draw = ImageDraw.Draw(canvas)
         font_path = font_path or find_font_path()
+        caption_fill = (255, 255, 255) if blur_background else style.text
         if cover_image:
-            cover_max_width = max(52, int(canvas_width * 0.18))
+            cover_max_width = max(52, int(content_width * 0.18))
             cover_max_height = max(46, int(bottom * 0.64))
             cover = _resize_to_fit(cover_image, cover_max_width, cover_max_height)
             gap = max(16, int(width * 0.022))
-            text_max_width = max(80, canvas_width - side * 2 - cover.width - gap)
+            text_max_width = max(80, content_width - side * 2 - cover.width - gap)
 
             title_font = None
             title_left = title_top = title_width = title_height = 0
@@ -248,12 +335,12 @@ def render_film_frame(
             block_height = max(cover.height, text_block_height)
 
             if text_align == "left":
-                block_x = side
+                block_x = content_x + side
             elif text_align == "right":
-                block_x = canvas_width - side - block_width
+                block_x = content_x + content_width - side - block_width
             else:
-                block_x = (canvas_width - block_width) // 2
-            block_y = height + top + (bottom - block_height) // 2
+                block_x = content_x + (content_width - block_width) // 2
+            block_y = content_y + height + top + (bottom - block_height) // 2
 
             cover_x = block_x
             cover_y = block_y + (block_height - cover.height) // 2
@@ -262,27 +349,27 @@ def render_film_frame(
             text_x = cover_x + cover.width + gap
             text_y = block_y + (block_height - text_block_height) // 2
             if caption and title_font:
-                draw.text((text_x - title_left, text_y - title_top), caption, fill=style.text, font=title_font)
+                draw.text((text_x - title_left, text_y - title_top), caption, fill=caption_fill, font=title_font)
         elif caption:
             preferred_size = max(28, int(width * 0.042))
             min_size = max(16, int(width * 0.024))
             font = _fit_font(
                 draw=draw,
                 text=caption,
-                max_width=canvas_width - side * 2,
+                max_width=content_width - side * 2,
                 preferred_size=preferred_size,
                 min_size=min_size,
                 font_path=font_path,
             )
             left, top_text, _right, _bottom_text, text_width, text_height = _text_metrics(draw, caption, font)
             if text_align == "left":
-                x = side
+                x = content_x + side
             elif text_align == "right":
-                x = canvas_width - side - text_width
+                x = content_x + content_width - side - text_width
             else:
-                x = (canvas_width - text_width) // 2
-            y = height + top + (bottom - text_height) // 2 - top_text
-            draw.text((x - left, y), caption, fill=style.text, font=font)
+                x = content_x + (content_width - text_width) // 2
+            y = content_y + height + top + (bottom - text_height) // 2 - top_text
+            draw.text((x - left, y), caption, fill=caption_fill, font=font)
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -302,8 +389,14 @@ def main() -> None:
     parser.add_argument("--text-align", default="center", choices=["left", "center", "right"])
     parser.add_argument("--side-border-ratio", type=float, default=0.055)
     parser.add_argument("--top-border-ratio", type=float, default=0.055)
+    parser.add_argument("--blur-background", action="store_true")
+    parser.add_argument("--aspect-ratio", default="", help="Output aspect ratio, for example 1:1 or 3:2")
     parser.add_argument("--max-long-edge", type=int, default=4096)
     args = parser.parse_args()
+    aspect_ratio = None
+    if args.aspect_ratio and ":" in args.aspect_ratio:
+        ratio_width, ratio_height = args.aspect_ratio.split(":", 1)
+        aspect_ratio = (float(ratio_width), float(ratio_height))
 
     result = render_film_frame(
         input_path=args.input,
@@ -316,6 +409,8 @@ def main() -> None:
         text_align=args.text_align,
         side_border_ratio=args.side_border_ratio,
         top_border_ratio=args.top_border_ratio,
+        blur_background=args.blur_background,
+        output_aspect_ratio=aspect_ratio,
         max_long_edge=args.max_long_edge,
     )
     print(result)
