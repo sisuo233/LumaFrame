@@ -1,0 +1,73 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache Buildozer downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+            ~/.gradle
+            ~/.cache/pip
+            ~/film-border-build/.buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            build-essential \
+            ccache \
+            cmake \
+            git \
+            libffi-dev \
+            libltdl-dev \
+            libssl-dev \
+            libtool \
+            openjdk-17-jdk \
+            patch \
+            pkg-config \
+            python3-pip \
+            python3-venv \
+            rsync \
+            unzip \
+            zip \
+            zlib1g-dev
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade buildozer cython virtualenv
+
+      - name: Build APK
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          bash scripts/build_apk.sh
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: film-border-debug-apk
+          path: bin/*.apk
+          if-no-files-found: error
