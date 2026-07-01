@@ -5,3 +5,4 @@ __pycache__/
 bin/
 exports/
 .kivy/
+.codex-remote-attachments/

@@ -622,6 +622,8 @@ class FilmBorderApp(App):
         self.status_label = self._label("先打开相册选择一张照片。", font_size=dp(12), color=[0.50, 0.50, 0.53, 1])
         self.status_label.size_hint_y = None
         self.status_label.height = dp(26)
+        self.status_label.shorten = True
+        self.status_label.shorten_from = "right"
         panel.add_widget(self.status_label)
         return panel
 
@@ -1061,6 +1063,10 @@ class FilmBorderApp(App):
 
             uri = intent.getData()
             if uri is None:
+                clip_data = intent.getClipData()
+                if clip_data is not None and clip_data.getItemCount() > 0:
+                    uri = clip_data.getItemAt(0).getUri()
+            if uri is None:
                 self.set_status("没有拿到相册图片。")
                 return
             self._on_file_selection([uri.toString()])
@@ -1107,6 +1113,7 @@ class FilmBorderApp(App):
         path = Path(selected)
         if not path.exists():
             raise FileNotFoundError(selected)
+        self._validate_image_path(path)
         return path
 
     def _copy_android_uri_to_cache(self, uri_text: str) -> Path:
@@ -1118,23 +1125,31 @@ class FilmBorderApp(App):
 
         uri = Uri.parse(uri_text)
         resolver = PythonActivity.mActivity.getContentResolver()
+        imports_dir = Path(self.user_data_dir) / "imports"
+        imports_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+        decoded_path = self._decode_android_uri_to_jpeg(resolver, uri, imports_dir / f"album_{stamp}.jpg")
+        if decoded_path is not None:
+            self._validate_image_path(decoded_path)
+            return decoded_path
+
         input_stream = resolver.openInputStream(uri)
         if input_stream is None:
             raise ValueError("无法打开相册图片流。")
 
-        mime_type = resolver.getType(uri) or ""
+        mime_type = (resolver.getType(uri) or "").lower()
+        if mime_type in ("image/heic", "image/heif"):
+            input_stream.close()
+            raise ValueError("这张照片是 HEIC/HEIF，当前系统解码失败，请在相册中导出为 JPG 后再选。")
+
         ext = {
             "image/jpeg": ".jpg",
             "image/png": ".png",
             "image/webp": ".webp",
             "image/bmp": ".bmp",
-            "image/heic": ".heic",
-            "image/heif": ".heif",
         }.get(mime_type, ".jpg")
-
-        imports_dir = Path(self.user_data_dir) / "imports"
-        imports_dir.mkdir(parents=True, exist_ok=True)
-        output_path = imports_dir / f"album_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}{ext}"
+        output_path = imports_dir / f"album_{stamp}{ext}"
 
         output_stream = FileOutputStream(str(output_path))
         buffer = jarray("b")([0] * 8192)
@@ -1149,7 +1164,68 @@ class FilmBorderApp(App):
             output_stream.close()
             input_stream.close()
 
+        self._validate_image_path(output_path)
         return output_path
+
+    def _decode_android_uri_to_jpeg(self, resolver, uri, output_path: Path) -> Path | None:
+        from jnius import autoclass
+
+        FileOutputStream = autoclass("java.io.FileOutputStream")
+        bitmap = None
+        input_stream = None
+        output_stream = None
+
+        try:
+            try:
+                BuildVersion = autoclass("android.os.Build$VERSION")
+                if BuildVersion.SDK_INT >= 28:
+                    ImageDecoder = autoclass("android.graphics.ImageDecoder")
+                    source = ImageDecoder.createSource(resolver, uri)
+                    bitmap = ImageDecoder.decodeBitmap(source)
+            except Exception:
+                bitmap = None
+
+            if bitmap is None:
+                BitmapFactory = autoclass("android.graphics.BitmapFactory")
+                input_stream = resolver.openInputStream(uri)
+                if input_stream is None:
+                    return None
+                bitmap = BitmapFactory.decodeStream(input_stream)
+
+            if bitmap is None:
+                return None
+
+            BitmapCompressFormat = autoclass("android.graphics.Bitmap$CompressFormat")
+            output_stream = FileOutputStream(str(output_path))
+            ok = bitmap.compress(BitmapCompressFormat.JPEG, 95, output_stream)
+            output_stream.flush()
+            if not ok:
+                return None
+            return output_path
+        except Exception:
+            return None
+        finally:
+            if output_stream is not None:
+                output_stream.close()
+            if input_stream is not None:
+                input_stream.close()
+            if bitmap is not None:
+                try:
+                    bitmap.recycle()
+                except Exception:
+                    pass
+
+    def _validate_image_path(self, path: Path):
+        if not path.exists() or path.stat().st_size <= 0:
+            raise ValueError("没有读取到有效照片数据。")
+
+        try:
+            from PIL import Image as PILImage
+
+            with PILImage.open(path) as image:
+                image.verify()
+        except Exception as exc:
+            raise ValueError("照片格式无法读取，请换一张 JPG/PNG，或在相册中重新导出后再选。") from exc
 
     def preview_current(self, *_args):
         if self.preview_event is not None:
@@ -1283,13 +1359,24 @@ class FilmBorderApp(App):
         self.busy = False
         self.placeholder.opacity = 1
         self.placeholder.text = "预览生成失败。"
-        self.set_status(f"处理失败：{message}")
+        self.set_status(f"处理失败：{self._friendly_error(message)}")
         if self.pending_preview:
             self.pending_preview = False
             self._schedule_preview()
 
     def set_status(self, text: str):
+        text = " ".join(str(text).split())
+        if len(text) > 90:
+            text = f"{text[:87]}..."
         self.status_label.text = text
+
+    def _friendly_error(self, message: str) -> str:
+        lower_message = message.lower()
+        if "cannot identify image file" in lower_message:
+            return "照片格式无法读取，请换一张 JPG/PNG，或在相册中重新导出后再选。"
+        if "heic" in lower_message or "heif" in lower_message:
+            return "HEIC/HEIF 解码失败，请在相册中导出为 JPG 后再选。"
+        return message
 
     def _scan_android_gallery(self, path: Path):
         try:
