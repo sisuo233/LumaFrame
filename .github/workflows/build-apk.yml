@@ -64,7 +64,7 @@ jobs:
             zip \
             zlib1g-dev
           python -m pip install --upgrade pip
-          python -m pip install --upgrade buildozer cython virtualenv
+          python -m pip install --upgrade buildozer cython virtualenv python-for-android==2026.5.9
 
       - name: Build APK
         run: |
