@@ -1381,6 +1381,20 @@ class FilmBorderApp(App):
         sync_aspect_buttons()
         return aspect_label, aspect_row, sync_aspect_buttons
 
+    def _film_cover_toggle_text(self) -> str:
+        return "胶卷图片：显示" if self.show_film_cover else "胶卷图片：隐藏"
+
+    def _sync_film_cover_toggle(self, button: CapsuleButton):
+        button.text = self._film_cover_toggle_text()
+        if self.show_film_cover:
+            button.normal_color = [0.93, 0.935, 0.945, 1]
+            button.down_color = [0.88, 0.885, 0.90, 1]
+            button.color = [0.04, 0.04, 0.05, 1]
+        else:
+            button.normal_color = [0.08, 0.08, 0.09, 1]
+            button.down_color = [0.16, 0.16, 0.17, 1]
+            button.color = [1, 1, 1, 1]
+
     def _show_border_sheet(self):
         sheet = BoxLayout(
             orientation="vertical",
@@ -1441,7 +1455,7 @@ class FilmBorderApp(App):
         aspect_label, aspect_row, sync_aspect_buttons = self._make_aspect_controls()
 
         cover_button = CapsuleButton(
-            text="显示胶卷图片" if self.show_film_cover else "隐藏胶卷图片",
+            text=self._film_cover_toggle_text(),
             font_name=self.font_name,
             size_hint_y=None,
             height=dp(40),
@@ -1449,6 +1463,7 @@ class FilmBorderApp(App):
             down_color=[0.88, 0.885, 0.90, 1],
             color=[0.04, 0.04, 0.05, 1],
         )
+        self._sync_film_cover_toggle(cover_button)
         reset_button = CapsuleButton(
             text="重置",
             font_name=self.font_name,
@@ -1460,13 +1475,15 @@ class FilmBorderApp(App):
 
         def toggle_cover(*_button_args):
             self.show_film_cover = not self.show_film_cover
-            cover_button.text = "显示胶卷图片" if self.show_film_cover else "隐藏胶卷图片"
+            self._sync_film_cover_toggle(cover_button)
             self._schedule_preview(delay=0, quiet=True)
 
         def reset_values(*_reset_args):
             top_slider.value = DEFAULT_TOP_BORDER_RATIO
             side_slider.value = DEFAULT_SIDE_BORDER_RATIO
             self.output_aspect_label = DEFAULT_ASPECT_RATIO_LABEL
+            self.show_film_cover = True
+            self._sync_film_cover_toggle(cover_button)
             sync_aspect_buttons()
             self._schedule_preview(delay=0, quiet=True)
 
