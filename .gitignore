@@ -4,5 +4,6 @@ __pycache__/
 .buildozer/
 bin/
 exports/
+release-artifacts/
 .kivy/
 .codex-remote-attachments/
