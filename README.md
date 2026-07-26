@@ -18,7 +18,7 @@
 本机已经安装了并行的 Python 3.12.10，并用它创建了 `.venv`。不要用默认 Python 3.14 跑 Kivy，Kivy 的 Windows 依赖包还没有完整支持 3.14。
 
 ```powershell
-cd film-border
+cd LumaFrame
 .\.venv\Scripts\python.exe main.py
 ```
 
