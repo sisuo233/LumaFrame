@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable
 
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
 
 try:
     RESAMPLE_LANCZOS = Image.Resampling.LANCZOS
+    RESAMPLE_BILINEAR = Image.Resampling.BILINEAR
 except AttributeError:  # Pillow < 9
     RESAMPLE_LANCZOS = Image.LANCZOS
+    RESAMPLE_BILINEAR = Image.BILINEAR
 
 
 @dataclass(frozen=True)
@@ -19,13 +22,15 @@ class FrameStyle:
     label: str
     background: tuple[int, int, int]
     text: tuple[int, int, int]
-    caption_hint: tuple[int, int, int]
     gradient: tuple[
         tuple[int, int, int],
         tuple[int, int, int],
         tuple[int, int, int],
         tuple[int, int, int],
     ] | None = None
+    paper_texture: str | None = None
+    photo_keyline: tuple[int, int, int] | None = None
+    edge_accents: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None
 
 
 STYLE_PRESETS: dict[str, FrameStyle] = {
@@ -33,31 +38,26 @@ STYLE_PRESETS: dict[str, FrameStyle] = {
         label="白色边框",
         background=(250, 250, 248),
         text=(20, 22, 25),
-        caption_hint=(118, 118, 122),
     ),
     "gallery_black": FrameStyle(
         label="黑色边框",
         background=(16, 17, 19),
         text=(245, 245, 247),
-        caption_hint=(170, 170, 176),
     ),
     "warm_gray": FrameStyle(
         label="银灰边框",
         background=(235, 236, 233),
         text=(28, 29, 31),
-        caption_hint=(130, 130, 134),
     ),
     "polaroid_gold": FrameStyle(
         label="宝丽来金色边框",
         background=(238, 188, 46),
         text=(45, 28, 8),
-        caption_hint=(126, 76, 18),
     ),
     "fuji_limited": FrameStyle(
         label="富士马卡龙相纸",
         background=(248, 229, 232),
         text=(54, 66, 76),
-        caption_hint=(112, 128, 142),
         gradient=(
             (255, 205, 218),
             (205, 229, 255),
@@ -65,11 +65,34 @@ STYLE_PRESETS: dict[str, FrameStyle] = {
             (255, 231, 183),
         ),
     ),
+    "ivory_cotton": FrameStyle(
+        label="象牙棉纸",
+        background=(247, 243, 232),
+        text=(66, 55, 45),
+        paper_texture="cotton",
+    ),
+    "archive_green": FrameStyle(
+        label="档案绿相纸",
+        background=(30, 58, 46),
+        text=(244, 239, 226),
+        paper_texture="matte",
+    ),
+    "silver_gelatin": FrameStyle(
+        label="银盐黑相纸",
+        background=(22, 23, 23),
+        text=(246, 246, 242),
+        photo_keyline=(177, 183, 184),
+    ),
+    "duotone_edge": FrameStyle(
+        label="双色边相纸",
+        background=(249, 250, 248),
+        text=(34, 37, 39),
+        edge_accents=((244, 116, 105), (45, 188, 205)),
+    ),
     "blur_background": FrameStyle(
         label="虚化背景",
         background=(20, 20, 20),
         text=(255, 255, 255),
-        caption_hint=(220, 220, 224),
     ),
 }
 
@@ -111,6 +134,10 @@ def find_font_path(extra_candidates: Iterable[str | Path] | None = None) -> str 
 
 def _open_image(path: str | Path, max_long_edge: int | None) -> Image.Image:
     image = Image.open(path)
+    if max_long_edge and image.format == "JPEG":
+        # Let libjpeg decode at a reduced DCT scale: faster and far less
+        # peak memory for large photos. Never shrinks below the target box.
+        image.draft("RGB", (max_long_edge, max_long_edge))
     image = ImageOps.exif_transpose(image)
 
     if image.mode in ("RGBA", "LA"):
@@ -132,10 +159,15 @@ def _open_image(path: str | Path, max_long_edge: int | None) -> Image.Image:
     return image
 
 
+@lru_cache(maxsize=128)
+def _load_truetype(font_path: str, size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(font_path, size)
+
+
 def _load_font(size: int, font_path: str | None) -> ImageFont.ImageFont:
     if font_path:
         try:
-            return ImageFont.truetype(font_path, size)
+            return _load_truetype(font_path, size)
         except OSError:
             pass
     return ImageFont.load_default()
@@ -159,18 +191,24 @@ def _fit_font(
     return _load_font(min_size, font_path)
 
 
+@lru_cache(maxsize=64)
+def _load_rgba_asset(path: str, modified_ns: int, file_size: int) -> Image.Image:
+    del modified_ns, file_size
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source)
+        return image.convert("RGBA")
+
+
 def _open_cover_image(path: str | Path | None) -> Image.Image | None:
     if not path:
         return None
-    cover_path = Path(path)
-    if not cover_path.is_absolute():
-        cover_path = Path(__file__).resolve().parent / cover_path
-    if not cover_path.exists():
-        return None
+    asset_path = Path(path)
+    if not asset_path.is_absolute():
+        asset_path = Path(__file__).resolve().parent / asset_path
     try:
-        image = Image.open(cover_path)
-        image = ImageOps.exif_transpose(image)
-        return image.convert("RGBA")
+        resolved_path = asset_path.resolve()
+        stat = resolved_path.stat()
+        return _load_rgba_asset(str(resolved_path), stat.st_mtime_ns, stat.st_size)
     except OSError:
         return None
 
@@ -180,13 +218,6 @@ def _trim_transparent(image: Image.Image) -> Image.Image:
         image = image.convert("RGBA")
     bbox = image.getbbox()
     return image.crop(bbox) if bbox else image
-
-
-def _tint_logo(image: Image.Image, fill: tuple[int, int, int]) -> Image.Image:
-    alpha = image.getchannel("A")
-    tinted = Image.new("RGBA", image.size, (*fill, 0))
-    tinted.putalpha(alpha)
-    return tinted
 
 
 def _remove_light_logo_background(image: Image.Image) -> Image.Image:
@@ -211,13 +242,14 @@ def _remove_light_logo_background(image: Image.Image) -> Image.Image:
     if light_corners < 3:
         return image
 
+    # Zero out the alpha wherever all three channels are near-white,
+    # using channel ops instead of a per-pixel Python loop.
+    red, green, blue, alpha = image.split()
+    light = red.point(lambda v: 255 if v > 238 else 0)
+    light = ImageChops.multiply(light, green.point(lambda v: 255 if v > 238 else 0))
+    light = ImageChops.multiply(light, blue.point(lambda v: 255 if v > 238 else 0))
     cleaned = image.copy()
-    cleaned_pixels = cleaned.load()
-    for y in range(height):
-        for x in range(width):
-            red, green, blue, alpha = cleaned_pixels[x, y]
-            if alpha > 0 and red > 238 and green > 238 and blue > 238:
-                cleaned_pixels[x, y] = (red, green, blue, 0)
+    cleaned.putalpha(ImageChops.multiply(alpha, ImageChops.invert(light)))
     return _trim_transparent(cleaned)
 
 
@@ -251,10 +283,21 @@ def _resize_to_cover(image: Image.Image, target_width: int, target_height: int) 
     return resized.crop((left, top, left + target_width, top + target_height))
 
 
+def _fast_gaussian_blur(image: Image.Image, radius: float) -> Image.Image:
+    """Approximate a large-radius Gaussian blur by blurring a downscaled copy."""
+    if radius <= 12:
+        return image.filter(ImageFilter.GaussianBlur(radius=radius))
+    factor = min(8.0, radius / 6.0)
+    small_size = (max(1, int(image.width / factor)), max(1, int(image.height / factor)))
+    small = image.resize(small_size, RESAMPLE_BILINEAR)
+    small = small.filter(ImageFilter.GaussianBlur(radius=radius / factor))
+    return small.resize(image.size, RESAMPLE_BILINEAR)
+
+
 def _make_blurred_background(image: Image.Image, width: int, height: int) -> Image.Image:
     background = _resize_to_cover(image, width, height)
     blur_radius = max(16, int(width * 0.028))
-    background = background.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    background = _fast_gaussian_blur(background, blur_radius)
     background = ImageEnhance.Brightness(background).enhance(0.58)
     background = ImageEnhance.Contrast(background).enhance(0.92)
     return background.convert("RGB")
@@ -274,19 +317,92 @@ def _make_corner_gradient(
     if width <= 1 or height <= 1:
         return Image.new("RGB", (width, height), top_left)
 
-    image = Image.new("RGB", (width, height))
-    pixels = image.load()
-    for y in range(height):
-        vertical = y / (height - 1)
-        for x in range(width):
-            horizontal = x / (width - 1)
+    # Sample the bilinear surface on a small grid and let Pillow interpolate
+    # it back up: same gradient as a per-pixel loop, hundreds of times faster.
+    grid_width = min(width, 64)
+    grid_height = min(height, 64)
+    grid = Image.new("RGB", (grid_width, grid_height))
+    pixels = grid.load()
+    for y in range(grid_height):
+        vertical = y / (grid_height - 1)
+        for x in range(grid_width):
+            horizontal = x / (grid_width - 1)
             channel_values = []
             for channel in range(3):
                 top = top_left[channel] * (1 - horizontal) + top_right[channel] * horizontal
                 bottom = bottom_left[channel] * (1 - horizontal) + bottom_right[channel] * horizontal
                 channel_values.append(int(round(top * (1 - vertical) + bottom * vertical)))
             pixels[x, y] = tuple(channel_values)
-    return image.filter(ImageFilter.GaussianBlur(radius=max(1, int(min(width, height) * 0.012))))
+    grid = grid.filter(ImageFilter.GaussianBlur(radius=1))
+    return grid.resize((width, height), RESAMPLE_BILINEAR)
+
+
+def _apply_paper_texture(
+    canvas: Image.Image,
+    background: tuple[int, int, int],
+    texture: str | None,
+) -> Image.Image:
+    if not texture:
+        return canvas
+
+    sample_size = (max(1, canvas.width // 3), max(1, canvas.height // 3))
+    if texture == "cotton":
+        noise = Image.effect_noise(sample_size, 13).filter(ImageFilter.GaussianBlur(radius=0.45))
+        dark = tuple(max(0, channel - 13) for channel in background)
+        light = tuple(min(255, channel + 8) for channel in background)
+        opacity = 0.22
+    else:
+        noise = Image.effect_noise(sample_size, 7).filter(ImageFilter.GaussianBlur(radius=0.7))
+        dark = tuple(max(0, channel - 7) for channel in background)
+        light = tuple(min(255, channel + 7) for channel in background)
+        opacity = 0.12
+
+    texture_layer = ImageOps.colorize(noise, dark, light).resize(canvas.size, RESAMPLE_BILINEAR)
+    return Image.blend(canvas.convert("RGB"), texture_layer, opacity)
+
+
+def _draw_frame_details(
+    canvas: Image.Image,
+    style: FrameStyle,
+    content_x: int,
+    content_y: int,
+    content_width: int,
+    content_height: int,
+    image_x: int,
+    image_y: int,
+    image_width: int,
+    image_height: int,
+) -> None:
+    draw = ImageDraw.Draw(canvas)
+    if style.edge_accents:
+        accent_width = max(3, int(image_width * 0.007))
+        left_color, right_color = style.edge_accents
+        draw.rectangle(
+            (content_x, content_y, content_x + accent_width - 1, content_y + content_height - 1),
+            fill=left_color,
+        )
+        draw.rectangle(
+            (
+                content_x + content_width - accent_width,
+                content_y,
+                content_x + content_width - 1,
+                content_y + content_height - 1,
+            ),
+            fill=right_color,
+        )
+
+    if style.photo_keyline:
+        line_width = max(1, int(image_width * 0.0018))
+        draw.rectangle(
+            (
+                image_x - line_width,
+                image_y - line_width,
+                image_x + image_width + line_width - 1,
+                image_y + image_height + line_width - 1,
+            ),
+            outline=style.photo_keyline,
+            width=line_width,
+        )
 
 
 def _paste_photo_with_depth(canvas: Image.Image, photo: Image.Image, x: int, y: int) -> Image.Image:
@@ -300,7 +416,7 @@ def _paste_photo_with_depth(canvas: Image.Image, photo: Image.Image, x: int, y: 
         radius=radius,
         fill=150,
     )
-    shadow_alpha = shadow_alpha.filter(ImageFilter.GaussianBlur(radius=shadow_radius))
+    shadow_alpha = _fast_gaussian_blur(shadow_alpha, shadow_radius)
     shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
     shadow.putalpha(shadow_alpha)
 
@@ -347,7 +463,6 @@ def _text_metrics(
 def _draw_camera_block(
     canvas: Image.Image,
     draw: ImageDraw.ImageDraw,
-    canvas_width: int,
     content_x: int,
     content_width: int,
     content_y: int,
@@ -463,6 +578,8 @@ def render_film_frame(
     output_aspect_ratio: tuple[float, float] | None = None,
     max_long_edge: int | None = 4096,
     font_path: str | None = None,
+    jpeg_quality: int = 95,
+    jpeg_optimize: bool = True,
 ) -> Path:
     """Create a bordered image with a larger bottom caption area."""
     if style_key not in STYLE_PRESETS:
@@ -493,6 +610,8 @@ def render_film_frame(
             else Image.new("RGB", (canvas_width, canvas_height), style.background)
         )
     )
+    if not blur_background:
+        canvas = _apply_paper_texture(canvas, style.background, style.paper_texture)
     min_side = max(8, int(side * 0.35))
     if image_align == "left":
         image_x = content_x + min_side
@@ -505,6 +624,18 @@ def render_film_frame(
         canvas = _paste_photo_with_depth(canvas, image, image_x, image_y)
     else:
         canvas.paste(image, (image_x, image_y))
+        _draw_frame_details(
+            canvas=canvas,
+            style=style,
+            content_x=content_x,
+            content_y=content_y,
+            content_width=content_width,
+            content_height=content_height,
+            image_x=image_x,
+            image_y=image_y,
+            image_width=width,
+            image_height=height,
+        )
 
     caption = film_name.strip()
     camera_logo_text = (camera_logo or "").strip() if show_camera_info else ""
@@ -513,7 +644,6 @@ def render_film_frame(
         draw = ImageDraw.Draw(canvas)
         font_path = font_path or find_font_path()
         caption_fill = (255, 255, 255) if blur_background else style.text
-        hint_fill = (225, 225, 230) if blur_background else style.caption_hint
         if cover_image:
             cover_max_width = max(52, int(content_width * 0.18))
             cover_max_height = max(46, int(bottom * 0.64))
@@ -581,7 +711,6 @@ def render_film_frame(
         _draw_camera_block(
             canvas=canvas,
             draw=draw,
-            canvas_width=canvas_width,
             content_x=content_x,
             content_width=content_width,
             content_y=content_y,
@@ -601,7 +730,7 @@ def render_film_frame(
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    canvas.save(output, format="JPEG", quality=95, subsampling=0, optimize=True)
+    canvas.save(output, format="JPEG", quality=jpeg_quality, subsampling=0, optimize=jpeg_optimize)
     return output
 
 

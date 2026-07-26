@@ -1,0 +1,91 @@
+name: Build LumaFrame Android Release APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build signed release APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            build-essential \
+            ccache \
+            cmake \
+            git \
+            libffi-dev \
+            libltdl-dev \
+            libssl-dev \
+            libtool \
+            openjdk-17-jdk \
+            patch \
+            pkg-config \
+            python3-pip \
+            python3-venv \
+            rsync \
+            unzip \
+            zip \
+            zlib1g-dev
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade buildozer cython virtualenv pillow python-for-android==2026.5.9
+
+      - name: Run renderer tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Restore release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "${ANDROID_KEYSTORE_BASE64}"
+          printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "${RUNNER_TEMP}/release-keystore.jks"
+
+      - name: Build signed release APK
+        env:
+          P4A_RELEASE_KEYSTORE: ${{ runner.temp }}/release-keystore.jks
+          P4A_RELEASE_KEYSTORE_PASSWD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          P4A_RELEASE_KEYALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          P4A_RELEASE_KEYALIAS_PASSWD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: bash scripts/build_apk.sh release
+
+      - name: Verify APK signature
+        run: |
+          APK_PATH="$(find bin -maxdepth 1 -type f -name '*release*.apk' -print -quit)"
+          test -n "${APK_PATH}"
+          APKSIGNER="$(find "${ANDROID_HOME}/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          test -n "${APKSIGNER}"
+          "${APKSIGNER}" verify --verbose --print-certs "${APK_PATH}"
+
+      - name: Upload release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumaframe-release-apk
+          path: bin/*release*.apk
+          if-no-files-found: error
+
+      - name: Remove temporary keystore
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/release-keystore.jks"

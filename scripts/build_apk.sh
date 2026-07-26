@@ -2,8 +2,14 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${HOME}/film-border-build"
+BUILD_DIR="${HOME}/lumaframe-build"
 OUTPUT_DIR="${PROJECT_DIR}/bin"
+BUILD_MODE="${1:-debug}"
+
+if [[ "${BUILD_MODE}" != "debug" && "${BUILD_MODE}" != "release" ]]; then
+  echo "Usage: $0 [debug|release]" >&2
+  exit 2
+fi
 
 export PATH="${HOME}/.local/bin:${PATH}"
 
@@ -32,12 +38,18 @@ else
 fi
 
 cd "${BUILD_DIR}"
-echo "Building test APK..."
-buildozer -v android debug
+echo "Building ${BUILD_MODE} APK..."
+buildozer -v android "${BUILD_MODE}"
 
 mkdir -p "${OUTPUT_DIR}"
-cp -f bin/*.apk "${OUTPUT_DIR}/"
+for apk in bin/*.apk; do
+  output_name="$(basename "${apk}")"
+  if [[ "${output_name}" == filmborder-* ]]; then
+    output_name="LumaFrame-${output_name#filmborder-}"
+  fi
+  cp -f "${apk}" "${OUTPUT_DIR}/${output_name}"
+done
 
 echo
-echo "APK copied to:"
+echo "${BUILD_MODE^} APK copied to:"
 ls -1 "${OUTPUT_DIR}"/*.apk

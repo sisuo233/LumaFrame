@@ -3,6 +3,10 @@
 Release APK builds are signed in GitHub Actions with repository secrets. Do not
 commit the keystore file or passwords to this public repository.
 
+The manual workflow is `.github/workflows/build-release-apk.yml`. It builds an
+APK, verifies its signature with `apksigner`, and uploads
+`lumaframe-release-apk`.
+
 ## 1. Generate a release keystore
 
 Run this on a machine with Java installed:
@@ -33,7 +37,7 @@ PowerShell:
 Open:
 
 ```text
-https://github.com/sisuo233/film-border/settings/secrets/actions
+https://github.com/sisuo233/LumaFrame/settings/secrets/actions
 ```
 
 Create these repository secrets:

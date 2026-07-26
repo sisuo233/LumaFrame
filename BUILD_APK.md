@@ -19,7 +19,7 @@
 ```powershell
 git init
 git add .
-git commit -m "Initial Film Border app"
+git commit -m "Initial LumaFrame app"
 git branch -M main
 git remote add origin https://github.com/你的用户名/你的仓库名.git
 git push -u origin main
@@ -48,7 +48,7 @@ Actions -> Build Android APK -> Run workflow
 打包完成后进入对应 workflow 运行记录，在页面底部 `Artifacts` 下载：
 
 ```text
-film-border-debug-apk
+lumaframe-test-apk
 ```
 
 下载后解压，里面就是 `.apk`。
@@ -93,7 +93,7 @@ export PATH="$HOME/.local/bin:$PATH"
 bash scripts/build_apk.sh
 ```
 
-脚本会把项目同步到 `~/film-border-build` 再打包，避免中文路径影响 Android 工具链。
+脚本会把项目同步到 `~/lumaframe-build` 再打包，避免中文路径影响 Android 工具链。
 
 生成的 APK 会复制回：
 
