@@ -31,7 +31,7 @@ sudo apt-get install -y \
   zlib1g-dev
 
 python3 -m pip install --user --upgrade pip
-python3 -m pip install --user --upgrade buildozer cython virtualenv
+python3 -m pip install --user --upgrade buildozer cython virtualenv python-for-android==2026.5.9
 
 echo
 echo "Done. If 'buildozer' is not found, run:"

@@ -48,7 +48,7 @@ Actions -> Build Android APK -> Run workflow
 打包完成后进入对应 workflow 运行记录，在页面底部 `Artifacts` 下载：
 
 ```text
-film-border-debug-apk
+film-border-test-apk
 ```
 
 下载后解压，里面就是 `.apk`。
