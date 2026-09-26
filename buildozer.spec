@@ -8,7 +8,7 @@ source.include_exts = py,png,jpg,jpeg,webp,bmp,json,kv,ttf,otf,ttc
 source.exclude_dirs = .git,.github,.venv,__pycache__,exports,bin,tests,.codex-remote-attachments
 
 version = 0.1.5
-requirements = python3,kivy,pillow,pyjnius
+requirements = python3,kivy,pillow,pyjnius,charset-normalizer==3.3.2
 orientation = portrait
 fullscreen = 0
 presplash.filename = %(source.dir)s/assets/app_icon.png
