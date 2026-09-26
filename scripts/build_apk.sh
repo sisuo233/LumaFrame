@@ -38,6 +38,7 @@ else
 fi
 
 cd "${BUILD_DIR}"
+export PIP_CONSTRAINT="${BUILD_DIR}/scripts/android-pip-constraints.txt"
 echo "Building ${BUILD_MODE} APK..."
 buildozer -v android "${BUILD_MODE}"
 
