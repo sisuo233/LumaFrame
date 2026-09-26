@@ -580,6 +580,8 @@ def render_film_frame(
     font_path: str | None = None,
     jpeg_quality: int = 95,
     jpeg_optimize: bool = True,
+    bottom_border_ratio: float | None = None,
+    photo_aspect_ratio: tuple[float, float] | None = None,
 ) -> Path:
     """Create a bordered image with a larger bottom caption area."""
     if style_key not in STYLE_PRESETS:
@@ -588,13 +590,27 @@ def render_film_frame(
     style = STYLE_PRESETS[style_key]
     blur_background = blur_background or style_key == "blur_background"
     image = _open_image(input_path, max_long_edge=max_long_edge)
+    if photo_aspect_ratio and all(value > 0 for value in photo_aspect_ratio):
+        target_ratio = photo_aspect_ratio[0] / photo_aspect_ratio[1]
+        current_ratio = image.width / image.height
+        if current_ratio > target_ratio:
+            crop_width = max(1, round(image.height * target_ratio))
+            left = (image.width - crop_width) // 2
+            image = image.crop((left, 0, left + crop_width, image.height))
+        elif current_ratio < target_ratio:
+            crop_height = max(1, round(image.width / target_ratio))
+            top_crop = (image.height - crop_height) // 2
+            image = image.crop((0, top_crop, image.width, top_crop + crop_height))
     width, height = image.size
     cover_image = _open_cover_image(film_cover_path)
     camera_logo_image = _open_cover_image(camera_logo_path) if show_camera_info else None
 
     side = max(12, int(width * side_border_ratio))
     top = max(12, int(width * top_border_ratio))
-    bottom = max(96, int(width * 0.155)) if cover_image else max(72, int(width * 0.135))
+    if bottom_border_ratio is None:
+        bottom = max(96, int(width * 0.155)) if cover_image else max(72, int(width * 0.135))
+    else:
+        bottom = max(12, int(width * bottom_border_ratio))
 
     content_width = width + side * 2
     content_height = height + top + bottom

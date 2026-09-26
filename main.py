@@ -9,13 +9,18 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from kivy.config import Config
+from kivy.utils import platform
+
+Config.set("graphics", "maxfps", "90" if platform in ("android", "ios") else "120")
+
 from kivy.animation import Animation
 from kivy.app import App
 from kivy.core.image import Image as CoreImage
 from kivy.clock import Clock
 from kivy.core.text import LabelBase
 from kivy.core.window import Window
-from kivy.graphics import Color, Line, PopMatrix, PushMatrix, Rectangle, RoundedRectangle, Scale, Translate
+from kivy.graphics import Color, Ellipse, InstructionGroup, Line, PopMatrix, PushMatrix, Rectangle, RoundedRectangle, Scale, StencilPop, StencilPush, StencilUnUse, StencilUse, Translate
 from kivy.metrics import dp
 from kivy.properties import BooleanProperty, ListProperty, NumericProperty
 from kivy.uix.boxlayout import BoxLayout
@@ -32,9 +37,10 @@ from kivy.uix.slider import Slider
 from kivy.uix.spinner import Spinner, SpinnerOption
 from kivy.uix.textinput import TextInput
 from kivy.uix.widget import Widget
-from kivy.utils import platform
 
 from film_frame import FONT_CANDIDATES, STYLE_PRESETS, find_font_path, render_film_frame
+from frame_presets import FRAME_PRESETS
+from menu_navigation import MenuNavigation
 
 
 APP_FONT = "FilmBorderUIFont"
@@ -59,6 +65,7 @@ D_PRESS = 0.10
 D_FAST = 0.18
 D_MED = 0.26
 D_SHEET = 0.34
+D_SHEET_EXIT = 0.38
 STYLE_BY_LABEL = {style.label: key for key, style in STYLE_PRESETS.items()}
 DEFAULT_STYLE_LABEL = STYLE_PRESETS["classic_white"].label
 TEXT_ALIGN_BY_LABEL = {
@@ -225,6 +232,7 @@ ASPECT_RATIO_PRESETS = [
     ("16:9", (16.0, 9.0)),
 ]
 ASPECT_RATIO_BY_LABEL = {label: ratio for label, ratio in ASPECT_RATIO_PRESETS}
+FRAME_PRESET_BY_LABEL = {preset.label: preset for preset in FRAME_PRESETS}
 DEFAULT_ASPECT_RATIO_LABEL = "原始"
 
 
@@ -254,6 +262,8 @@ class RenderRequest:
     output_aspect_ratio: tuple[float, float] | None
     side_border_ratio: float
     top_border_ratio: float
+    bottom_border_ratio: float | None
+    photo_aspect_ratio: tuple[float, float] | None
 
 
 SPECIAL_BRAND_PREFIXES = [
@@ -498,6 +508,33 @@ class RoundedSurface(BoxLayout):
         self.text_size = self.size
 
 
+class RoundedScrollView(ScrollView):
+    corner_radius = NumericProperty(dp(26))
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        mask_start = InstructionGroup()
+        mask_start.add(StencilPush())
+        mask_start.add(Color(1, 1, 1, 1))
+        self._mask_start_shape = RoundedRectangle(radius=[self.corner_radius])
+        mask_start.add(self._mask_start_shape)
+        mask_start.add(StencilUse())
+        self.canvas.before.insert(0, mask_start)
+        with self.canvas.after:
+            StencilUnUse()
+            Color(1, 1, 1, 1)
+            self._mask_end_shape = RoundedRectangle(radius=[self.corner_radius])
+            StencilPop()
+        self.bind(pos=self._sync_mask, size=self._sync_mask, corner_radius=self._sync_mask)
+        self._sync_mask()
+
+    def _sync_mask(self, *_args):
+        for shape in (self._mask_start_shape, self._mask_end_shape):
+            shape.pos = self.pos
+            shape.size = self.size
+            shape.radius = [self.corner_radius]
+
+
 class CapsuleButton(Button):
     normal_color = ListProperty(CLR_ACCENT)
     down_color = ListProperty(CLR_ACCENT_DOWN)
@@ -548,6 +585,44 @@ class CapsuleButton(Button):
         self._shape.radius = [self.radius]
         self._scale.origin = self.center
         self.text_size = self.size
+
+
+class PillToggle(Button):
+    active = BooleanProperty(True)
+    thumb_progress = NumericProperty(1)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.background_normal = ""
+        self.background_down = ""
+        self.background_color = [0, 0, 0, 0]
+        self.thumb_progress = int(self.active)
+        with self.canvas.before:
+            self._track_color = Color(*CLR_ACCENT)
+            self._track = RoundedRectangle(radius=[dp(16)])
+            self._thumb_color = Color(1, 1, 1, 1)
+            self._thumb = Ellipse()
+        self.bind(pos=self._sync_shape, size=self._sync_shape, thumb_progress=self._sync_shape)
+        self.bind(active=self._sync_active)
+        self._sync_active()
+
+    def _sync_shape(self, *_args):
+        track_height = dp(28)
+        track_y = self.center_y - track_height / 2
+        self._track.pos = (self.x, track_y)
+        self._track.size = (self.width, track_height)
+        thumb_size = dp(22)
+        travel = max(0, self.width - thumb_size - dp(6))
+        self._thumb.pos = (self.x + dp(3) + travel * self.thumb_progress, track_y + dp(3))
+        self._thumb.size = (thumb_size, thumb_size)
+
+    def _sync_active(self, *_args):
+        self._track_color.rgba = CLR_ACCENT if self.active else CLR_FILL_DOWN
+        Animation.cancel_all(self, "thumb_progress")
+        Animation(thumb_progress=int(self.active), d=D_FAST, t=EASE_OUT).start(self)
+
+    def on_release(self):
+        self.active = not self.active
 
 
 class SearchInput(TextInput):
@@ -738,6 +813,14 @@ class Scrim(Widget):
         return True
 
 
+class MenuPopup(Popup):
+    def _handle_keyboard(self, _window, key, *_args):
+        if key == 27 and hasattr(self, "menu_back"):
+            self.menu_back()
+            return True
+        return super()._handle_keyboard(_window, key, *_args)
+
+
 class FilmBorderApp(App):
     icon = str(APP_ICON_PATH)
 
@@ -752,8 +835,13 @@ class FilmBorderApp(App):
         self.pending_preview = False
         self.pending_preview_delay = 0.45
         self.selected_film = DEFAULT_FILM_NAME
+        self.film_search_text = ""
         self.show_film_cover = True
+        self._border_preview_spacer = None
         self.output_aspect_label = DEFAULT_ASPECT_RATIO_LABEL
+        self.active_frame_preset = "默认"
+        self.photo_aspect_ratio = None
+        self.bottom_border_ratio = None
         self.camera_brand_text = DEFAULT_CAMERA_BRAND_TEXT
         self.camera_model_text = ""
         self.show_camera_info = False
@@ -764,6 +852,8 @@ class FilmBorderApp(App):
         self.root_overlay = None
         self.border_sheet = None
         self.camera_sheet = None
+        self.menus = MenuNavigation(self._set_backdrop_depth)
+        Window.bind(on_keyboard=self._on_menu_keyboard)
         self.next_preview_quiet = False
         self.pending_preview_quiet = False
 
@@ -794,6 +884,8 @@ class FilmBorderApp(App):
         root.add_widget(header)
         root.add_widget(preview)
         root.add_widget(controls)
+        self.content_root = root
+        self.preview_panel = preview
         overlay.add_widget(root)
         self.root_overlay = overlay
         self.sheet_scrim = None
@@ -977,12 +1069,7 @@ class FilmBorderApp(App):
         self.style_spinner.bind(text=self._schedule_preview)
         self.text_align_spinner.bind(text=self._schedule_preview)
         self.camera_settings_button.bind(on_press=self.open_camera_settings)
-        style_row.add_widget(self.style_spinner)
-        style_row.add_widget(self.text_align_spinner)
-        style_row.add_widget(self.camera_settings_button)
-        panel.add_widget(style_row)
-
-        button_row = GridLayout(cols=3, spacing=dp(10), size_hint_y=None, height=dp(52))
+        button_row = GridLayout(cols=2, spacing=dp(10), size_hint_y=None, height=dp(52))
         album_button = CapsuleButton(
             text="打开照片",
             font_name=self.font_name,
@@ -1005,8 +1092,10 @@ class FilmBorderApp(App):
         album_button.bind(on_release=self.choose_photo)
         border_button.bind(on_release=self.open_border_settings)
         save_button.bind(on_release=self.save_current)
+        style_row.add_widget(border_button)
+        style_row.add_widget(self.camera_settings_button)
+        panel.add_widget(style_row)
         button_row.add_widget(album_button)
-        button_row.add_widget(border_button)
         button_row.add_widget(save_button)
         panel.add_widget(button_row)
 
@@ -1043,25 +1132,35 @@ class FilmBorderApp(App):
         )
         return content
 
-    def _open_popup_with_animation(self, popup: Popup, content=None, anchor_bottom: bool = True):
+    def _open_popup_with_animation(self, popup: Popup, content=None, anchor_bottom: bool = True, on_back=None):
         target = content or popup.content
-        target.opacity = 0
-        popup.overlay_color = CLR_SCRIM
-        popup.bind(on_dismiss=lambda *_args: self._set_backdrop_depth(False))
-        popup.open()
-        self._set_backdrop_depth(True)
-        if anchor_bottom:
-            popup.height = min(popup.height, Window.height - dp(24))
-            popup.width = min(Window.width * 0.94, dp(420))
-            popup.x = (Window.width - popup.width) / 2
-            popup.y = dp(10)
-
-        def run_animation(*_args):
+        desired_height = Window.height * popup.size_hint_y if popup.size_hint_y else popup.height
+        def fit(*_args):
             if anchor_bottom:
-                popup.height = min(popup.height, Window.height - dp(24))
+                popup.height = max(dp(80), min(desired_height, Window.height - _top_safe_inset() - dp(24)))
                 popup.width = min(Window.width * 0.94, dp(420))
                 popup.x = (Window.width - popup.width) / 2
                 popup.y = dp(10)
+
+        def cleanup():
+            Window.unbind(size=fit)
+            Animation.cancel_all(target)
+            popup.dismiss()
+
+        popup.menu_back = on_back or (lambda: self._dismiss_popup_with_animation(popup))
+        self.menus.open(popup, cleanup, popup.menu_back)
+        target.opacity = 0
+        popup.overlay_color = CLR_SCRIM
+        popup.bind(on_dismiss=lambda *_args: self.menus.release(popup))
+        popup.size_hint = (None, None)
+        popup.open()
+        Window.bind(size=fit)
+        fit()
+
+        def run_animation(*_args):
+            if self.menus.current is not popup:
+                return
+            fit()
             Animation.cancel_all(target)
             end_y = target.y
             target.y = end_y - dp(44)
@@ -1071,17 +1170,29 @@ class FilmBorderApp(App):
         Clock.schedule_once(run_animation, 0)
 
     def _dismiss_popup_with_animation(self, popup: Popup, on_complete=None):
+        if self.menus.current is not popup or getattr(popup, "_closing", False):
+            return
+        popup._closing = True
         target = popup.content
         Animation.cancel_all(target)
         end_y = target.y - dp(36)
         animation = Animation(opacity=0, y=end_y, d=0.20, t=EASE_EXIT)
-        animation.bind(
-            on_complete=lambda *_args: (
-                popup.dismiss(),
-                on_complete() if on_complete else None,
-            )
-        )
+        def finish(*_args):
+            if self.menus.current is not popup:
+                return
+            self.menus.release(popup)
+            if on_complete:
+                on_complete()
+
+        animation.bind(on_complete=finish)
         animation.start(target)
+
+    def _on_menu_keyboard(self, _window, key, *_args):
+        return self.menus.back() if key == 27 else False
+
+    def on_stop(self):
+        Window.unbind(on_keyboard=self._on_menu_keyboard)
+        self.menus.close()
 
     def _select_film(self, name: str):
         self.selected_film = name
@@ -1148,7 +1259,7 @@ class FilmBorderApp(App):
         scroll.add_widget(list_content)
         content.add_widget(scroll)
 
-        popup = Popup(
+        popup = MenuPopup(
             title="",
             title_size=0,
             separator_height=0,
@@ -1200,6 +1311,7 @@ class FilmBorderApp(App):
             _stagger_in(list(reversed(list_content.children)))
 
         def render_search(_instance=None, value: str = ""):
+            scroll.scroll_y = 1
             raw_query = value.strip()
             search_display.text = value
             query = raw_query.lower()
@@ -1232,12 +1344,15 @@ class FilmBorderApp(App):
         search_event = {"event": None}
 
         def schedule_search(_instance=None, value: str = ""):
+            self.film_search_text = value
             search_display.text = value
             if search_event["event"] is not None:
                 search_event["event"].cancel()
             search_event["event"] = Clock.schedule_once(lambda *_clock_args: render_search(value=value), 0.18)
 
         search_input.bind(text=schedule_search)
+        search_input.text = self.film_search_text
+        popup.bind(on_dismiss=lambda *_args: search_event["event"].cancel() if search_event["event"] else None)
         render_categories()
         self._open_popup_with_animation(popup, content)
 
@@ -1252,7 +1367,7 @@ class FilmBorderApp(App):
         list_content = BoxLayout(orientation="vertical", spacing=dp(10), size_hint_y=None)
         list_content.bind(minimum_height=list_content.setter("height"))
 
-        popup = Popup(
+        popup = MenuPopup(
             title="",
             title_size=0,
             separator_height=0,
@@ -1293,7 +1408,9 @@ class FilmBorderApp(App):
         back_button.bind(on_release=lambda *_button_args: self._back_to_film_categories(popup))
         footer.add_widget(back_button)
         content.add_widget(footer)
-        self._open_popup_with_animation(popup, content)
+        self._open_popup_with_animation(
+            popup, content, on_back=lambda: self._back_to_film_categories(popup)
+        )
 
     def open_camera_settings(self, *_args):
         self._toggle_camera_sheet()
@@ -1447,10 +1564,10 @@ class FilmBorderApp(App):
             return
         self._show_border_sheet()
 
-    def _make_aspect_controls(self):
+    def _make_aspect_controls(self, on_select=None):
         aspect_label = self._label("输出比例", font_size=dp(12), color=CLR_LABEL, bold=True)
         aspect_label.height = dp(18)
-        aspect_row = GridLayout(cols=len(ASPECT_RATIO_PRESETS), spacing=dp(6), size_hint_y=None, height=dp(34))
+        aspect_row = GridLayout(cols=4, spacing=dp(6), size_hint_y=None, height=dp(74))
         aspect_buttons: dict[str, CapsuleButton] = {}
 
         def sync_aspect_buttons():
@@ -1462,6 +1579,8 @@ class FilmBorderApp(App):
 
         def select_aspect(label: str):
             self.output_aspect_label = label
+            if on_select:
+                on_select()
             sync_aspect_buttons()
             self._schedule_preview(delay=0, quiet=True)
 
@@ -1482,32 +1601,52 @@ class FilmBorderApp(App):
         sync_aspect_buttons()
         return aspect_label, aspect_row, sync_aspect_buttons
 
-    def _film_cover_toggle_text(self) -> str:
-        return "胶卷图片：显示" if self.show_film_cover else "胶卷图片：隐藏"
-
-    def _sync_film_cover_toggle(self, button: CapsuleButton):
-        button.text = self._film_cover_toggle_text()
-        if self.show_film_cover:
-            button.normal_color = CLR_FILL
-            button.down_color = CLR_FILL_DOWN
-            button.color = CLR_LABEL
-        else:
-            button.normal_color = CLR_ACCENT
-            button.down_color = CLR_ACCENT_DOWN
-            button.color = [1, 1, 1, 1]
-
     def _show_border_sheet(self):
         sheet = RoundedSurface(
             orientation="vertical",
             padding=[dp(14), dp(10), dp(14), dp(10)],
             spacing=dp(7),
             size_hint=(0.94, None),
-            height=dp(286),
+            height=dp(620),
             pos_hint={"x": 0.03},
             radius=dp(26),
             bg_color=CLR_CARD,
             shadow=True,
         )
+
+        title = self._label("边框设置", font_size=dp(18), color=CLR_LABEL, bold=True)
+        title.height = dp(28)
+        sheet.add_widget(title)
+        preset_label = self._label("相纸预设", font_size=dp(12), color=CLR_SECONDARY)
+        preset_label.height = dp(18)
+        sheet.add_widget(preset_label)
+        preset_spinner = SoftSpinner(
+            text=self.active_frame_preset + "  ▼",
+            values=["默认", *(preset.label for preset in FRAME_PRESETS)],
+            font_name=self.font_name,
+            size_hint_y=None,
+            height=dp(46),
+        )
+        sheet.add_widget(preset_spinner)
+
+        def clear_preset(*_args):
+            if getattr(sheet, "_applying_preset", False):
+                return
+            self.active_frame_preset = "自定义"
+            preset_spinner.text = "自定义  ▼"
+
+        labels = BoxLayout(size_hint_y=None, height=dp(20), spacing=dp(8))
+        for text in ("相纸样式", "文字位置"):
+            label = self._label(text, font_size=dp(12), color=CLR_SECONDARY)
+            label.height = dp(20)
+            labels.add_widget(label)
+        sheet.add_widget(labels)
+        appearance = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        for control in (self.style_spinner, self.text_align_spinner):
+            if control.parent is not None:
+                control.parent.remove_widget(control)
+            appearance.add_widget(control)
+        sheet.add_widget(appearance)
 
         top_label = self._label("", font_size=dp(12), color=CLR_LABEL, bold=True)
         top_label.height = dp(18)
@@ -1530,37 +1669,60 @@ class FilmBorderApp(App):
             size_hint_y=None,
             height=dp(30),
         )
+        bottom_label = self._label("", font_size=dp(12), color=CLR_LABEL, bold=True)
+        bottom_label.height = dp(18)
+        bottom_slider = Slider(
+            min=0.05,
+            max=0.5,
+            value=self.bottom_border_ratio if self.bottom_border_ratio is not None else 0.135,
+            step=0.001,
+            size_hint_y=None,
+            height=dp(30),
+        )
 
         def update_label(label: Label, prefix: str, value: float):
             label.text = f"{prefix} {value * 100:.1f}%"
 
         def on_top_change(_slider, value: float):
+            clear_preset()
             self.top_border_ratio = value
             update_label(top_label, "调整上边框", value)
             self._schedule_preview(delay=0, quiet=True)
 
         def on_side_change(_slider, value: float):
+            clear_preset()
             self.side_border_ratio = value
             update_label(side_label, "调整左右边框", value)
             self._schedule_preview(delay=0, quiet=True)
 
+        def on_bottom_change(_slider, value: float):
+            clear_preset()
+            self.bottom_border_ratio = value
+            update_label(bottom_label, "调整下边框", value)
+            self._schedule_preview(delay=0, quiet=True)
+
         update_label(top_label, "调整上边框", self.top_border_ratio)
         update_label(side_label, "调整左右边框", self.side_border_ratio)
+        bottom_label.text = (
+            "调整下边框 自动" if self.bottom_border_ratio is None
+            else f"调整下边框 {self.bottom_border_ratio * 100:.1f}%"
+        )
         top_slider.bind(value=on_top_change)
         side_slider.bind(value=on_side_change)
+        bottom_slider.bind(value=on_bottom_change)
 
-        aspect_label, aspect_row, sync_aspect_buttons = self._make_aspect_controls()
+        def manual_aspect():
+            self.photo_aspect_ratio = None
+            clear_preset()
 
-        cover_button = CapsuleButton(
-            text=self._film_cover_toggle_text(),
-            font_name=self.font_name,
-            size_hint_y=None,
-            height=dp(40),
-            normal_color=CLR_FILL,
-            down_color=CLR_FILL_DOWN,
-            color=CLR_LABEL,
-        )
-        self._sync_film_cover_toggle(cover_button)
+        aspect_label, aspect_row, sync_aspect_buttons = self._make_aspect_controls(manual_aspect)
+
+        cover_row = BoxLayout(size_hint_y=None, height=dp(40))
+        cover_label = self._label("胶卷封面", font_size=dp(14), color=CLR_LABEL)
+        cover_label.height = dp(40)
+        cover_switch = PillToggle(active=self.show_film_cover, size_hint=(None, 1), width=dp(50))
+        cover_row.add_widget(cover_label)
+        cover_row.add_widget(cover_switch)
         reset_button = CapsuleButton(
             text="重置",
             font_name=self.font_name,
@@ -1570,21 +1732,69 @@ class FilmBorderApp(App):
         )
         done_button = CapsuleButton(text="完成", font_name=self.font_name, color=[1, 1, 1, 1])
 
-        def toggle_cover(*_button_args):
-            self.show_film_cover = not self.show_film_cover
-            self._sync_film_cover_toggle(cover_button)
+        def toggle_cover(_switch, active):
+            clear_preset()
+            self.show_film_cover = active
             self._schedule_preview(delay=0, quiet=True)
 
         def reset_values(*_reset_args):
+            sheet._applying_preset = True
+            self.style_spinner.text = DEFAULT_STYLE_LABEL
+            self.text_align_spinner.text = DEFAULT_TEXT_ALIGN_LABEL
             top_slider.value = DEFAULT_TOP_BORDER_RATIO
             side_slider.value = DEFAULT_SIDE_BORDER_RATIO
+            bottom_slider.value = 0.135
             self.output_aspect_label = DEFAULT_ASPECT_RATIO_LABEL
+            self.photo_aspect_ratio = None
+            self.bottom_border_ratio = None
+            bottom_label.text = "调整下边框 自动"
             self.show_film_cover = True
-            self._sync_film_cover_toggle(cover_button)
+            cover_switch.active = True
+            self.active_frame_preset = "默认"
+            preset_spinner.text = "默认  ▼"
+            sheet._applying_preset = False
             sync_aspect_buttons()
             self._schedule_preview(delay=0, quiet=True)
 
-        cover_button.bind(on_release=toggle_cover)
+        def apply_preset(preset):
+            sheet._applying_preset = True
+            self.style_spinner.text = STYLE_PRESETS["classic_white"].label
+            self.text_align_spinner.text = "文字居中"
+            top_slider.value = preset.top_border_ratio
+            side_slider.value = preset.side_border_ratio
+            bottom_slider.value = preset.bottom_border_ratio
+            self.top_border_ratio = preset.top_border_ratio
+            self.side_border_ratio = preset.side_border_ratio
+            self.bottom_border_ratio = preset.bottom_border_ratio
+            self.photo_aspect_ratio = preset.photo_size
+            self.output_aspect_label = preset.label
+            self.show_film_cover = False
+            cover_switch.active = False
+            self.active_frame_preset = preset.label
+            preset_spinner.text = preset.label + "  ▼"
+            sheet._applying_preset = False
+            sync_aspect_buttons()
+            self._schedule_preview(delay=0, quiet=True)
+
+        def on_preset_selected(_spinner, value):
+            if not getattr(sheet, "_applying_preset", False):
+                if value == "默认":
+                    reset_values()
+                    return
+                preset = FRAME_PRESET_BY_LABEL.get(value)
+                if preset is not None:
+                    apply_preset(preset)
+
+        preset_spinner.bind(text=on_preset_selected)
+
+        self.style_spinner.bind(text=clear_preset)
+        self.text_align_spinner.bind(text=clear_preset)
+        sheet._unbind_preset = lambda: (
+            self.style_spinner.unbind(text=clear_preset),
+            self.text_align_spinner.unbind(text=clear_preset),
+        )
+
+        cover_switch.bind(active=toggle_cover)
         reset_button.bind(on_release=reset_values)
         done_button.bind(on_release=lambda *_button_args: self._hide_border_sheet())
 
@@ -1592,10 +1802,12 @@ class FilmBorderApp(App):
         sheet.add_widget(top_slider)
         sheet.add_widget(side_label)
         sheet.add_widget(side_slider)
+        sheet.add_widget(bottom_label)
+        sheet.add_widget(bottom_slider)
         sheet.add_widget(aspect_label)
         sheet.add_widget(aspect_row)
-        button_row = GridLayout(cols=3, spacing=dp(8), size_hint_y=None, height=dp(40))
-        button_row.add_widget(cover_button)
+        sheet.add_widget(cover_row)
+        button_row = GridLayout(cols=2, spacing=dp(8), size_hint_y=None, height=dp(40))
         button_row.add_widget(reset_button)
         button_row.add_widget(done_button)
         sheet.add_widget(button_row)
@@ -1610,49 +1822,194 @@ class FilmBorderApp(App):
         self.border_sheet = None
         self._dismiss_sheet(sheet)
 
-    def _set_backdrop_depth(self, pushed: bool):
+    def _set_backdrop_depth(self, pushed: bool, duration: float | None = None):
         scale = getattr(self, "_root_scale", None)
         if scale is None:
             return
         scale.origin = (Window.width / 2.0, Window.height / 2.0)
         Animation.cancel_all(scale)
         target = 0.965 if pushed else 1.0
-        Animation(x=target, y=target, d=D_SHEET if pushed else D_MED, t=EASE_OUT).start(scale)
+        Animation(
+            x=target,
+            y=target,
+            d=duration if duration is not None else (D_SHEET if pushed else D_MED),
+            t="in_out_cubic" if duration is not None else EASE_OUT,
+        ).start(scale)
 
     def _present_sheet(self, sheet):
         overlay = self.root_overlay
         if overlay is None:
             return
+        view_class = RoundedScrollView if sheet is self.border_sheet else ScrollView
+        view = view_class(size_hint=(None, None), bar_width=dp(3), do_scroll_x=False)
+        natural_height = sheet.height
+        if sheet is self.border_sheet:
+            sheet.bg_color = [1, 1, 1, 0]
+            sheet.shadow = False
+            with view.canvas.before:
+                Color(*CLR_CARD)
+                fixed_background = RoundedRectangle(radius=[sheet.radius])
+            view.bind(
+                pos=lambda widget, _value: setattr(fixed_background, "pos", widget.pos),
+                size=lambda widget, _value: setattr(fixed_background, "size", widget.size),
+            )
+        sheet.size_hint = (1, None)
+        sheet.pos_hint = {}
+        view.add_widget(sheet)
+        sheet._menu_view = view
+
+        def fit(*_args):
+            view.width = min(overlay.width * 0.94, dp(420))
+            max_height = overlay.height - _top_safe_inset() - dp(28)
+            if sheet is self.border_sheet:
+                max_height = min(max_height, overlay.height * 0.66)
+            view.height = min(natural_height, max(dp(80), max_height))
+            view.x = (overlay.width - view.width) / 2
+            if sheet is self.border_sheet:
+                self._fit_border_preview(view)
+
+        fit()
+        overlay.bind(size=fit)
         scrim = Scrim(on_tap=self._hide_bottom_sheets)
+        def cleanup():
+            overlay.unbind(size=fit)
+            if hasattr(sheet, "_unbind_preset"):
+                sheet._unbind_preset()
+            if sheet is self.border_sheet or getattr(sheet, "_border_preview", False):
+                self._restore_border_preview()
+            for widget in sheet.walk():
+                if isinstance(widget, Spinner):
+                    widget.is_open = False
+            Animation.cancel_all(view)
+            Animation.cancel_all(scrim)
+            for widget in (view, scrim):
+                if widget.parent is overlay:
+                    overlay.remove_widget(widget)
+            for name in ("camera_sheet", "border_sheet"):
+                if getattr(self, name) is sheet:
+                    setattr(self, name, None)
+            if self.sheet_scrim is scrim:
+                self.sheet_scrim = None
+
+        self.menus.open(sheet, cleanup, self._hide_bottom_sheets)
         self.sheet_scrim = scrim
         overlay.add_widget(scrim)
+        view.y = -view.height
+        overlay.add_widget(view)
+        if sheet is self.border_sheet:
+            sheet._border_preview = True
+            self._lift_border_preview(view)
         # 空间一致性：面板从屏幕底部完整滑入，退场沿同一路径返回
-        sheet.y = -sheet.height
-        overlay.add_widget(sheet)
         Animation(opacity=1, d=D_MED, t="out_quad").start(scrim)
-        Animation.cancel_all(sheet)
-        Animation(y=dp(14), d=D_SHEET, t=EASE_SHEET).start(sheet)
-        self._set_backdrop_depth(True)
+        Animation(y=dp(14), d=D_SHEET, t=EASE_SHEET).start(view)
 
     def _dismiss_sheet(self, sheet):
-        overlay = self.root_overlay
+        if self.menus.current is not sheet or getattr(sheet, "_closing", False):
+            return
+        sheet._closing = True
+        view = sheet._menu_view
+        returning_preview = getattr(sheet, "_border_preview", False) and self._border_preview_spacer is not None
+        remaining = 2 if returning_preview else 1
+
+        def finish_part(*_args):
+            nonlocal remaining
+            remaining -= 1
+            if remaining == 0:
+                self.menus.release(sheet)
+
+        if returning_preview:
+            self._restore_border_preview(animated=True, on_complete=finish_part)
+        self._set_backdrop_depth(False, duration=D_SHEET_EXIT)
         scrim = self.sheet_scrim
-        self.sheet_scrim = None
-        self._set_backdrop_depth(False)
-        if scrim is not None and overlay is not None:
-            scrim_out = Animation(opacity=0, d=0.22, t="out_quad")
-            scrim_out.bind(on_complete=lambda *_args: overlay.remove_widget(scrim))
+        if scrim is not None:
+            Animation.cancel_all(scrim)
+            scrim_out = Animation(opacity=0, d=D_SHEET_EXIT, t="in_out_cubic")
             scrim_out.start(scrim)
-        Animation.cancel_all(sheet)
-        slide_out = Animation(y=-sheet.height, d=D_MED, t=EASE_EXIT)
-        if overlay is not None:
-            slide_out.bind(on_complete=lambda *_args: overlay.remove_widget(sheet))
-        slide_out.start(sheet)
+        Animation.cancel_all(view)
+        slide_out = Animation(y=-view.height, d=D_SHEET_EXIT, t="in_out_cubic")
+        slide_out.bind(on_complete=finish_part)
+        slide_out.start(view)
+
+    def _fit_border_preview(self, sheet_view):
+        preview = self.preview_panel
+        if self._border_preview_spacer is None:
+            return
+        usable_top = self.root_overlay.height - _top_safe_inset() - dp(12)
+        sheet_top = sheet_view.height + dp(14)
+        height = max(dp(80), usable_top - sheet_top - dp(12))
+        target = (self.root_overlay.width * 0.04, usable_top - height)
+        preview.size = (self.root_overlay.width * 0.92, height)
+        preview.pos = target
+
+    def _lift_border_preview(self, sheet_view):
+        if self._border_preview_spacer is not None:
+            return
+        preview = self.preview_panel
+        root = self.content_root
+        start_pos = preview.pos
+        start_size = preview.size
+        spacer = Widget(size_hint=(1, 1))
+        root.remove_widget(preview)
+        root.add_widget(spacer, index=1)
+        self._border_preview_spacer = spacer
+        preview.size_hint = (None, None)
+        preview.pos = start_pos
+        preview.size = start_size
+        self.root_overlay.add_widget(preview)
+        self.root_overlay.remove_widget(sheet_view)
+        self.root_overlay.add_widget(sheet_view)
+        usable_top = self.root_overlay.height - _top_safe_inset() - dp(12)
+        height = max(dp(80), usable_top - sheet_view.height - dp(26))
+        Animation.cancel_all(preview)
+        Animation(
+            x=self.root_overlay.width * 0.04,
+            y=usable_top - height,
+            width=self.root_overlay.width * 0.92,
+            height=height,
+            d=D_SHEET,
+            t=EASE_SHEET,
+        ).start(preview)
+        Clock.schedule_once(
+            lambda *_args: self._fit_border_preview(sheet_view)
+            if self._border_preview_spacer is spacer else None,
+            D_SHEET,
+        )
+
+    def _restore_border_preview(self, animated=False, on_complete=None):
+        spacer = self._border_preview_spacer
+        if spacer is None:
+            return
+        preview = self.preview_panel
+        Animation.cancel_all(preview)
+
+        def finish(*_args):
+            if spacer.parent is not self.content_root:
+                return
+            if preview.parent is self.root_overlay:
+                self.root_overlay.remove_widget(preview)
+            self.content_root.remove_widget(spacer)
+            preview.size_hint = (1, 1)
+            self.content_root.add_widget(preview, index=1)
+            self._border_preview_spacer = None
+            if on_complete:
+                on_complete()
+
+        if animated:
+            target_pos = spacer.pos
+            motion = Animation(
+                x=target_pos[0], y=target_pos[1],
+                width=spacer.width, height=spacer.height,
+                d=D_SHEET_EXIT, t="in_out_cubic",
+            )
+            motion.bind(on_complete=finish)
+            motion.start(preview)
+        else:
+            finish()
 
     def choose_photo(self, *_args):
         if self.busy or self.import_busy:
             return
-        self._hide_bottom_sheets()
+        self.menus.close()
         if platform == "android":
             self._open_android_gallery()
             return
@@ -1725,7 +2082,7 @@ class FilmBorderApp(App):
         content = BoxLayout(orientation="vertical", spacing=dp(6))
         content.add_widget(chooser)
         content.add_widget(buttons)
-        popup = Popup(
+        popup = MenuPopup(
             title="",
             title_size=0,
             separator_height=0,
@@ -2129,6 +2486,8 @@ class FilmBorderApp(App):
             output_aspect_ratio=self._current_output_aspect_ratio(),
             side_border_ratio=self.side_border_ratio,
             top_border_ratio=self.top_border_ratio,
+            bottom_border_ratio=self.bottom_border_ratio,
+            photo_aspect_ratio=self.photo_aspect_ratio,
         )
         thread = threading.Thread(
             target=self._render_worker,
@@ -2154,6 +2513,8 @@ class FilmBorderApp(App):
                 text_align=request.text_align,
                 side_border_ratio=request.side_border_ratio,
                 top_border_ratio=request.top_border_ratio,
+                bottom_border_ratio=request.bottom_border_ratio,
+                photo_aspect_ratio=request.photo_aspect_ratio,
                 output_aspect_ratio=request.output_aspect_ratio,
                 max_long_edge=None if request.save else 1800,
                 jpeg_quality=95 if request.save else 88,
@@ -2248,7 +2609,8 @@ class FilmBorderApp(App):
         return TEXT_ALIGN_BY_LABEL.get(self.text_align_spinner.text, "center")
 
     def _current_output_aspect_ratio(self) -> tuple[float, float] | None:
-        return ASPECT_RATIO_BY_LABEL.get(self.output_aspect_label)
+        preset = FRAME_PRESET_BY_LABEL.get(self.output_aspect_label)
+        return preset.frame_size if preset else ASPECT_RATIO_BY_LABEL.get(self.output_aspect_label)
 
     def _current_camera_logo(self) -> tuple[str, str | None]:
         raw_brand = (self.camera_brand_text or "").strip()
